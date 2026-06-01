@@ -577,15 +577,19 @@ def train_gan(
             d_path,
         )
 
-        # Early stopping
+        # Phase-aware early stopping for GAN:
+        # Adversarial training causes initial metric degradation and oscillation.
+        # We disable early stopping for the first 50% of epochs (burn-in period)
+        # to allow the generator and discriminator to reach an equilibrium.
         if val_rmse < best_val_metric:
             best_val_metric = val_rmse
             patience_counter = 0
         else:
             patience_counter += 1
 
-        if patience_counter >= es_cfg["patience"]:
-            print(f"  Early stopping at epoch {epoch+1}")
+        burn_in = total_epochs // 2
+        if patience_counter >= es_cfg["patience"] and epoch >= burn_in:
+            print(f"  Early stopping at epoch {epoch+1} (patience={es_cfg['patience']}, passed burn-in)")
             break
 
     return metric_tracker.get_best()
