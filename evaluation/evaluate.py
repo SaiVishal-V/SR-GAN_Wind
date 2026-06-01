@@ -77,7 +77,7 @@ def evaluate_model(
     # Storage for NetCDF output
     sr_all = []
     hr_all = []
-    mask = test_dataset.hr_ocean_mask[::-1, :]
+    mask = test_dataset.hr_ocean_mask
 
     print(f"\nEvaluating {n_scenes} test scenes...")
 
@@ -98,8 +98,8 @@ def evaluate_model(
             all_metrics[key].append(val)
 
         # Collect denormalized values for scatter/histogram
-        sr_np = sr.squeeze().cpu().numpy()[::-1, :]
-        hr_np = hr.squeeze().cpu().numpy()[::-1, :]
+        sr_np = sr.squeeze().cpu().numpy()
+        hr_np = hr.squeeze().cpu().numpy()
 
         sr_mps = sr_np * NORM_STD + NORM_MEAN
         hr_mps = hr_np * NORM_STD + NORM_MEAN
@@ -113,12 +113,18 @@ def evaluate_model(
 
         # Plot first 5 scenes
         if i < 5:
-            lr_np = lr.squeeze().cpu().numpy()[::-1, :]
+            # Flip horizontally for Matplotlib to map properly to extent=[30, 100, -10, 30]
+            # Since raw col 0 is East (100) and col 559 is West (30).
+            lr_plot = lr.squeeze().cpu().numpy()[:, ::-1]
+            sr_plot = sr_np[:, ::-1]
+            hr_plot = hr_np[:, ::-1]
+            mask_plot = mask[:, ::-1]
+
             plot_comparison(
-                lr=lr_np,
-                sr=sr_np,
-                hr=hr_np,
-                mask_hr=mask,
+                lr=lr_plot,
+                sr=sr_plot,
+                hr=hr_plot,
+                mask_hr=mask_plot,
                 vmin=config["evaluation"]["vmin"],
                 vmax=config["evaluation"]["vmax"],
                 cmap_name=config["evaluation"]["cmap"],
@@ -205,14 +211,15 @@ def save_netcdf_output(
     v_lat = ds.createVariable("lat", "f4", ("lat_hr",))
     v_lat.units = "degrees_north"
     v_lat.long_name = "Latitude"
-    # The array was flipped vertically earlier, so index 0 is North (30), index 319 is South (-10)
-    v_lat[:] = np.linspace(-10, 30, h)
+    # Row 0 is North (30), row 319 is South (-10). 
+    # To maintain perfect 0.125 degree resolution, offset by half a pixel (0.0625)
+    v_lat[:] = np.linspace(30 - 0.0625, -10 + 0.0625, h)
 
     v_lon = ds.createVariable("lon", "f4", ("lon_hr",))
     v_lon.units = "degrees_east"
     v_lon.long_name = "Longitude"
-    # index 0 is West (30), index 559 is East (100)
-    v_lon[:] = np.linspace(30, 100, w)
+    # Col 0 is East (100), col 559 is West (30).
+    v_lon[:] = np.linspace(100 - 0.0625, 30 + 0.0625, w)
 
     v_sr_norm = ds.createVariable(
         "predicted_wind_speed_norm", "f4", ("time", "lat_hr", "lon_hr"),
