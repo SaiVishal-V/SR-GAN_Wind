@@ -77,7 +77,7 @@ def evaluate_model(
     # Storage for NetCDF output
     sr_all = []
     hr_all = []
-    mask = test_dataset.hr_ocean_mask[::-1, ::-1]
+    mask = test_dataset.hr_ocean_mask[::-1, :]
 
     print(f"\nEvaluating {n_scenes} test scenes...")
 
@@ -98,8 +98,8 @@ def evaluate_model(
             all_metrics[key].append(val)
 
         # Collect denormalized values for scatter/histogram
-        sr_np = sr.squeeze().cpu().numpy()[::-1, ::-1]
-        hr_np = hr.squeeze().cpu().numpy()[::-1, ::-1]
+        sr_np = sr.squeeze().cpu().numpy()[::-1, :]
+        hr_np = hr.squeeze().cpu().numpy()[::-1, :]
 
         sr_mps = sr_np * NORM_STD + NORM_MEAN
         hr_mps = hr_np * NORM_STD + NORM_MEAN
@@ -113,7 +113,7 @@ def evaluate_model(
 
         # Plot first 5 scenes
         if i < 5:
-            lr_np = lr.squeeze().cpu().numpy()[::-1, ::-1]
+            lr_np = lr.squeeze().cpu().numpy()[::-1, :]
             plot_comparison(
                 lr=lr_np,
                 sr=sr_np,
