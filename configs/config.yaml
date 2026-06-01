@@ -1,0 +1,118 @@
+# ==============================================================================
+# SR-GAN Wind Speed Super-Resolution — Configuration
+# ==============================================================================
+# All hyperparameters in one place. Values verified from dataset inspection.
+# ==============================================================================
+
+# --- Data Paths ---
+data:
+  # Local path (Windows)
+  local_path: "E:/SR-GAN/IR_wind_23_24_new_SRGAN_ready.nc"
+  # Google Colab path
+  colab_path: "/content/IR_wind_23_24_new_SRGAN_ready.nc"
+
+  # NetCDF variable names (verified from dataset)
+  lr_variable: "wind_speed_lr_norm"
+  hr_variable: "wind_speed_hr_norm"
+  mask_variable: "hr_ocean_mask"
+  quality_variable: "lr_ocean_fraction"
+
+  # Normalization constants (verified from dataset attributes & wind_speed_original)
+  norm_mean: 6.336302810300043
+  norm_std: 2.9275431488456434
+
+  # Temporal train/val/test split (no random splitting — prevents temporal leakage)
+  # 392 timesteps total: 274 train / 59 val / 59 test
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+
+  # Dataset caching — load entire dataset into RAM for faster training
+  cache_dataset: true
+
+# --- Patch Extraction ---
+patches:
+  lr_patch_size: 16          # LR patch spatial size
+  hr_patch_size: 64          # HR patch spatial size (lr × scale_factor)
+  min_ocean_fraction: 0.5    # Patch acceptance threshold (review: default 0.5)
+  patches_per_image: 32      # Number of random patches per timestep per epoch
+
+# --- Model Architecture ---
+model:
+  scale_factor: 4
+  in_channels: 1
+
+  generator:
+    num_features: 64
+    num_residual_blocks: 8   # Review recommendation: start with 8, increase if needed
+    use_batchnorm: false     # Review: removed for scientific continuous fields
+    activation: "prelu"
+
+  discriminator:
+    type: "patchgan"         # 70×70 PatchGAN
+    base_channels: 64
+    spectral_norm: true
+
+# --- Loss Functions ---
+loss:
+  pixel_weight: 1.0         # λ1 — Masked L1
+  adversarial_weight: 0.001  # λ2 — Adversarial (1e-3)
+  gradient_weight: 0.1      # λ3 — Gradient loss
+
+# --- Training ---
+training:
+  # Stage 1: Generator Pretraining (L1 only, no discriminator)
+  pretrain_epochs: 100
+  # Stage 2: GAN Fine-Tuning (Generator + Discriminator)
+  gan_epochs: 200
+
+  batch_size: 16
+  num_workers: 4
+
+  optimizer:
+    type: "adamw"
+    lr: 0.0001               # 1e-4
+    betas: [0.9, 0.999]
+    weight_decay: 0.0001
+
+  scheduler:
+    type: "cosine"           # CosineAnnealingLR
+    T_max: null              # Auto-set to total epochs per stage
+    eta_min: 0.000001        # 1e-6
+
+  gradient_clip: 1.0         # Max gradient norm
+  amp: true                  # Automatic Mixed Precision
+
+  # Early stopping
+  early_stopping:
+    patience: 30
+    metric: "val_rmse"
+    mode: "min"
+
+# --- Checkpointing ---
+checkpoint:
+  save_dir: "checkpoints"
+  save_interval: 50          # Save every N epochs
+  # Best-metric checkpoints (review recommendation)
+  save_best_rmse: true
+  save_best_ssim: true
+  save_best_psnr: true
+
+# --- Logging ---
+logging:
+  tensorboard: true
+  tensorboard_dir: "tensorboard"
+  log_interval: 10           # Print every N batches
+
+# --- Evaluation ---
+evaluation:
+  output_dir: "outputs"
+  # Plotting
+  vmin: 0                    # Wind speed colormap min (m/s)
+  vmax: 30                   # Wind speed colormap max (m/s)
+  cmap: "viridis"
+  missing_color: "white"
+
+# --- Reproducibility ---
+seed: 42
+deterministic: true
