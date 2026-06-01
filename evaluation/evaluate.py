@@ -77,8 +77,7 @@ def evaluate_model(
     # Storage for NetCDF output
     sr_all = []
     hr_all = []
-    # Transpose and flip horizontally to fix spatial orientation (North up, West left)
-    mask = test_dataset.hr_ocean_mask.T[:, ::-1]
+    mask = test_dataset.hr_ocean_mask
 
     print(f"\nEvaluating {n_scenes} test scenes...")
 
@@ -98,9 +97,9 @@ def evaluate_model(
                 all_metrics[key] = []
             all_metrics[key].append(val)
 
-        # Collect denormalized values for scatter/histogram (orient correctly)
-        sr_np = sr.squeeze().cpu().numpy().T[:, ::-1]
-        hr_np = hr.squeeze().cpu().numpy().T[:, ::-1]
+        # Collect denormalized values for scatter/histogram
+        sr_np = sr.squeeze().cpu().numpy()
+        hr_np = hr.squeeze().cpu().numpy()
 
         sr_mps = sr_np * NORM_STD + NORM_MEAN
         hr_mps = hr_np * NORM_STD + NORM_MEAN
@@ -114,7 +113,7 @@ def evaluate_model(
 
         # Plot first 5 scenes
         if i < 5:
-            lr_np = lr.squeeze().cpu().numpy().T[:, ::-1]
+            lr_np = lr.squeeze().cpu().numpy()
             plot_comparison(
                 lr=lr_np,
                 sr=sr_np,
