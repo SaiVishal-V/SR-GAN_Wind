@@ -202,6 +202,18 @@ def save_netcdf_output(
     ds.createDimension("lon_hr", w)
 
     # Variables
+    v_lat = ds.createVariable("lat", "f4", ("lat_hr",))
+    v_lat.units = "degrees_north"
+    v_lat.long_name = "Latitude"
+    # The array was flipped vertically earlier, so index 0 is North (30), index 319 is South (-10)
+    v_lat[:] = np.linspace(-10, 30, h)
+
+    v_lon = ds.createVariable("lon", "f4", ("lon_hr",))
+    v_lon.units = "degrees_east"
+    v_lon.long_name = "Longitude"
+    # index 0 is West (30), index 559 is East (100)
+    v_lon[:] = np.linspace(30, 100, w)
+
     v_sr_norm = ds.createVariable(
         "predicted_wind_speed_norm", "f4", ("time", "lat_hr", "lon_hr"),
         fill_value=-9999.0,

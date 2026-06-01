@@ -66,10 +66,13 @@ def plot_wind_field(
     data_masked = np.where(mask == 1, data, np.nan)
 
     fig, ax = plt.subplots(1, 1, figsize=figsize)
-    im = ax.imshow(data_masked, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
+    im = ax.imshow(
+        data_masked, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto",
+        extent=[30, 100, -10, 30]
+    )
     ax.set_title(title, fontsize=14)
-    ax.set_xlabel("Longitude Index")
-    ax.set_ylabel("Latitude Index")
+    ax.set_xlabel("Longitude (°E)")
+    ax.set_ylabel("Latitude (°N)")
     plt.colorbar(im, ax=ax, label="Wind Speed (m/s)", shrink=0.8)
     plt.tight_layout()
 
@@ -130,27 +133,35 @@ def plot_comparison(
 
     fig, axes = plt.subplots(1, 4, figsize=(24, 5))
 
+    # Extent for geographic mapping (lon_min, lon_max, lat_min, lat_max)
+    geo_extent = [30, 100, -10, 30]
+
     # LR Input
-    im0 = axes[0].imshow(lr_masked, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
+    im0 = axes[0].imshow(lr_masked, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto", extent=geo_extent)
     axes[0].set_title("LR Input", fontsize=12)
+    axes[0].set_xlabel("Longitude (°E)")
+    axes[0].set_ylabel("Latitude (°N)")
     plt.colorbar(im0, ax=axes[0], shrink=0.8)
 
     # SR Prediction
-    im1 = axes[1].imshow(sr_masked, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
+    im1 = axes[1].imshow(sr_masked, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto", extent=geo_extent)
     axes[1].set_title("SR Prediction", fontsize=12)
+    axes[1].set_xlabel("Longitude (°E)")
     plt.colorbar(im1, ax=axes[1], shrink=0.8)
 
     # Ground Truth
-    im2 = axes[2].imshow(hr_masked, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
+    im2 = axes[2].imshow(hr_masked, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto", extent=geo_extent)
     axes[2].set_title("Ground Truth (HR)", fontsize=12)
+    axes[2].set_xlabel("Longitude (°E)")
     plt.colorbar(im2, ax=axes[2], shrink=0.8)
 
     # Error Map
     error_max = max(abs(np.nanmin(error)), abs(np.nanmax(error)), 3.0)
     im3 = axes[3].imshow(
-        error, cmap=error_cmap, vmin=-error_max, vmax=error_max, aspect="auto"
+        error, cmap=error_cmap, vmin=-error_max, vmax=error_max, aspect="auto", extent=geo_extent
     )
     axes[3].set_title("Error (SR - HR)", fontsize=12)
+    axes[3].set_xlabel("Longitude (°E)")
     plt.colorbar(im3, ax=axes[3], label="Error (m/s)", shrink=0.8)
 
     if title:
