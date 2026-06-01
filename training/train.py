@@ -272,10 +272,13 @@ def train_pretrain(
     if best_metrics:
         metric_tracker.best.update(best_metrics)
 
-    # Early stopping
+    # Early stopping (Smoothed & Phase-aware)
     es_cfg = config["training"]["early_stopping"]
-    best_val_metric = float("inf") if es_cfg["mode"] == "min" else 0.0
+    best_smoothed_metric = float("inf") if es_cfg["mode"] == "min" else 0.0
+    smoothed_metric = None
     patience_counter = 0
+    alpha = 0.2  # EMA smoothing factor
+    min_delta = 1e-4
 
     grad_clip = config["training"]["gradient_clip"]
 
@@ -359,22 +362,32 @@ def train_pretrain(
             os.path.join(config["checkpoint"]["save_dir"], "last_checkpoint.pth"),
         )
 
-        # Early stopping
-        if es_cfg["mode"] == "min":
-            if val_rmse < best_val_metric:
-                best_val_metric = val_rmse
-                patience_counter = 0
-            else:
-                patience_counter += 1
+        # Global Minima Search: Smoothed Early Stopping
+        # 1. EMA smoothing filters out local minima and noisy spikes
+        # 2. Burn-in prevents stopping before CosineAnnealingLR drops
+        if smoothed_metric is None:
+            smoothed_metric = val_rmse
         else:
-            if val_rmse > best_val_metric:
-                best_val_metric = val_rmse
-                patience_counter = 0
-            else:
-                patience_counter += 1
+            smoothed_metric = alpha * val_rmse + (1 - alpha) * smoothed_metric
 
-        if patience_counter >= es_cfg["patience"]:
-            print(f"  Early stopping at epoch {epoch+1} (patience={es_cfg['patience']})")
+        improved = False
+        if es_cfg["mode"] == "min":
+            if smoothed_metric < best_smoothed_metric - min_delta:
+                best_smoothed_metric = smoothed_metric
+                improved = True
+        else:
+            if smoothed_metric > best_smoothed_metric + min_delta:
+                best_smoothed_metric = smoothed_metric
+                improved = True
+
+        if improved:
+            patience_counter = 0
+        else:
+            patience_counter += 1
+
+        burn_in = int(total_epochs * 0.8)  # Require 80% completion for LR decay
+        if patience_counter >= es_cfg["patience"] and epoch >= burn_in:
+            print(f"  Early stopping at epoch {epoch+1} (smoothed_rmse={smoothed_metric:.6f})")
             break
 
     return metric_tracker.get_best()
@@ -457,8 +470,11 @@ def train_gan(
         metric_tracker.best.update(best_metrics)
 
     es_cfg = config["training"]["early_stopping"]
-    best_val_metric = float("inf")
+    best_smoothed_metric = float("inf")
+    smoothed_metric = None
     patience_counter = 0
+    alpha = 0.1  # Heavier smoothing for GANs
+    min_delta = 1e-4
     grad_clip = config["training"]["gradient_clip"]
 
     for epoch in range(start_epoch, total_epochs):
@@ -577,19 +593,23 @@ def train_gan(
             d_path,
         )
 
-        # Phase-aware early stopping for GAN:
-        # Adversarial training causes initial metric degradation and oscillation.
-        # We disable early stopping for the first 50% of epochs (burn-in period)
-        # to allow the generator and discriminator to reach an equilibrium.
-        if val_rmse < best_val_metric:
-            best_val_metric = val_rmse
+        # Global Minima Search: Smoothed Early Stopping for GAN
+        # 1. Heavy EMA smoothing filters out extreme adversarial oscillations
+        # 2. Burn-in extended to 80% to ensure LR decay reaches the global basin
+        if smoothed_metric is None:
+            smoothed_metric = val_rmse
+        else:
+            smoothed_metric = alpha * val_rmse + (1 - alpha) * smoothed_metric
+
+        if smoothed_metric < best_smoothed_metric - min_delta:
+            best_smoothed_metric = smoothed_metric
             patience_counter = 0
         else:
             patience_counter += 1
 
-        burn_in = total_epochs // 2
+        burn_in = int(total_epochs * 0.8)
         if patience_counter >= es_cfg["patience"] and epoch >= burn_in:
-            print(f"  Early stopping at epoch {epoch+1} (patience={es_cfg['patience']}, passed burn-in)")
+            print(f"  Early stopping at epoch {epoch+1} (smoothed_rmse={smoothed_metric:.6f})")
             break
 
     return metric_tracker.get_best()
