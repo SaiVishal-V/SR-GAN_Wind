@@ -318,7 +318,11 @@ def main():
     print(f"Loaded checkpoint: {args.checkpoint}")
 
     # Output directory
-    output_dir = args.output_dir or config["evaluation"]["output_dir"]
+    if args.colab and not args.output_dir:
+        output_dir = os.path.join("/content/drive/MyDrive/SR-GAN_Wind", config["evaluation"]["output_dir"])
+        print(f"  Colab Mode: Routing outputs to {output_dir}")
+    else:
+        output_dir = args.output_dir or config["evaluation"]["output_dir"]
 
     # Evaluate
     evaluate_model(generator, test_dataset, device, output_dir, config)

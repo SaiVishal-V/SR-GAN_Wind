@@ -236,7 +236,12 @@ def main():
         for k, v in sorted(metrics.items()):
             print(f"    {k:20s}: {v:.6f}")
 
-    generate_report(results, args.output_dir)
+    output_dir = args.output_dir
+    if args.colab and output_dir == "outputs/benchmark":
+        output_dir = "/content/drive/MyDrive/SR-GAN_Wind/outputs/benchmark"
+        print(f"  Colab Mode: Routing outputs to {output_dir}")
+
+    generate_report(results, output_dir)
 
 
 if __name__ == "__main__":

@@ -638,6 +638,13 @@ def main():
     # Load config
     config = load_config(args.config)
 
+    # Route outputs to Google Drive in Colab mode
+    if args.colab:
+        base_dir = "/content/drive/MyDrive/SR-GAN_Wind"
+        config["checkpoint"]["save_dir"] = os.path.join(base_dir, config["checkpoint"]["save_dir"])
+        config["logging"]["tensorboard_dir"] = os.path.join(base_dir, config["logging"]["tensorboard_dir"])
+        print(f"  Colab Mode: Routing outputs to {base_dir}")
+
     # Set seed
     set_seed(config["seed"], config["deterministic"])
 
