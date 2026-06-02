@@ -25,6 +25,7 @@ def main():
     lrs = []
     for _ in range(epochs):
         lrs.append(opt.param_groups[0]["lr"])
+        opt.step()
         sched.step()
     schedules["Cosine Annealing"] = lrs
 
@@ -34,6 +35,7 @@ def main():
     lrs2 = []
     for _ in range(epochs):
         lrs2.append(opt2.param_groups[0]["lr"])
+        opt2.step()
         sched2.step()
     schedules["Warm Restarts (T0=50, Tmult=2)"] = lrs2
 
@@ -43,6 +45,7 @@ def main():
     lrs3 = []
     for _ in range(epochs):
         lrs3.append(opt3.param_groups[0]["lr"])
+        opt3.step()
         sched3.step()
     schedules["OneCycleLR"] = lrs3
 
