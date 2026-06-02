@@ -54,7 +54,7 @@ def main():
         with torch.no_grad():
             sr = generator(s["lr"].unsqueeze(0).to(device)).cpu()
         sr_mps = denormalize(sr).squeeze()
-        hr_mps = denormalize(s["hr"])
+        hr_mps = denormalize(s["hr"]).squeeze()
         errors = (sr_mps - hr_mps)[mask.squeeze() == 1].numpy()
         all_errors.extend(errors)
 

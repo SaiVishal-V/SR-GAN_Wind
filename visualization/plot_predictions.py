@@ -47,7 +47,10 @@ def plot_5panel(lr, sr, hr, mask, title, save_path, vmin=0, vmax=20):
     axes[3].set_title("Error (m/s)")
     plt.colorbar(im3, ax=axes[3], fraction=0.046)
 
-    grad_err = np.sqrt(sr_gy[:-1,:]**2 + sr_gx[:,:-1]**2)[:sr_gy.shape[0]-1, :sr_gx.shape[1]-1]
+    # Gradient magnitude (crop to common size)
+    sr_gy_crop = sr_gy[:, :-1]
+    sr_gx_crop = sr_gx[:-1, :]
+    grad_err = np.sqrt(sr_gy_crop**2 + sr_gx_crop**2)
     im4 = axes[4].imshow(grad_err, cmap="inferno", origin="upper")
     axes[4].set_title("SR Gradient Magnitude")
     plt.colorbar(im4, ax=axes[4], fraction=0.046)
