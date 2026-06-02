@@ -1,19 +1,18 @@
 """
-SR-GAN Training Script for Wind-Speed Super-Resolution.
+SR-GAN Training Script for Wind-Speed Super-Resolution (V2).
 
 Two-stage training pipeline:
     Stage 1: Generator Pretraining (Masked L1 only, no discriminator)
     Stage 2: GAN Fine-Tuning (Generator + Discriminator, full loss)
 
-Features (incorporating all review recommendations):
-    - Resume training support (review #5: --resume)
-    - CosineAnnealingLR scheduler (review #6)
-    - AMP mixed precision
-    - Gradient clipping
-    - TensorBoard logging (review #12)
-    - Best-metric checkpoints: RMSE, SSIM, PSNR (review #3)
-    - Full-scene validation every epoch (review #2)
-    - Early stopping
+V2 Features:
+    - EMA generator with best_ema checkpoint selection
+    - Gradient monitoring (per-layer norms, vanishing/exploding detection)
+    - Experiment tracker (config_used.yaml, experiment_summary.md)
+    - Configurable scheduler (cosine | warm_restarts | onecycle)
+    - Configurable loss (Laplacian, spectral, Charbonnier, multi-scale)
+    - Early stopping with min_delta
+    - All V1 features preserved
 
 Usage:
     # Train from scratch
@@ -51,11 +50,36 @@ from utils.checkpoint import (
     BestMetricTracker,
 )
 from utils.metrics import compute_all_metrics
+from utils.ema import EMAGenerator
+from utils.gradient_monitor import GradientMonitor
+from utils.experiment_tracker import ExperimentTracker
 from datasets.wind_dataset import WindSRDataset, get_temporal_split
 from models.generator import SRResNet
 from models.discriminator import PatchGANDiscriminator
 from models.losses import GeneratorLoss, adversarial_loss_d, masked_l1_loss
 from training.validate import validate
+
+
+def create_scheduler(optimizer, config, total_epochs):
+    """Create LR scheduler based on config."""
+    sched_cfg = config["training"]["scheduler"]
+    sched_type = sched_cfg.get("type", "cosine")
+    eta_min = sched_cfg.get("eta_min", 1e-6)
+
+    if sched_type == "warm_restarts":
+        return optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, T_0=sched_cfg.get("T_0", 50),
+            T_mult=sched_cfg.get("T_mult", 2), eta_min=eta_min,
+        )
+    elif sched_type == "onecycle":
+        return optim.lr_scheduler.OneCycleLR(
+            optimizer, max_lr=config["training"]["optimizer"]["lr"] * 10,
+            total_steps=total_epochs, pct_start=0.3,
+        )
+    else:  # cosine (default)
+        return optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=total_epochs, eta_min=eta_min,
+        )
 
 
 def load_config(config_path: str) -> dict:
@@ -256,13 +280,9 @@ def train_pretrain(
         weight_decay=opt_cfg["weight_decay"],
     )
 
-    # CosineAnnealingLR (review #6)
+    # Configurable scheduler (V2)
     total_epochs = config["training"]["pretrain_epochs"]
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=total_epochs,
-        eta_min=config["training"]["scheduler"]["eta_min"],
-    )
+    scheduler = create_scheduler(optimizer, config, total_epochs)
 
     # AMP
     scaler = GradScaler(enabled=config["training"]["amp"] and torch.cuda.is_available())
@@ -272,13 +292,17 @@ def train_pretrain(
     if best_metrics:
         metric_tracker.best.update(best_metrics)
 
-    # Early stopping (Smoothed & Phase-aware)
-    es_cfg = config["training"]["early_stopping"]
-    best_smoothed_metric = float("inf") if es_cfg["mode"] == "min" else 0.0
-    smoothed_metric = None
-    patience_counter = 0
-    alpha = 0.2  # EMA smoothing factor
-    min_delta = 1e-4
+    # V2: EMA generator
+    opt_v2 = config.get("optimization", {})
+    ema = None
+    if opt_v2.get("ema_enabled", False):
+        ema = EMAGenerator(generator, decay=opt_v2.get("ema_decay", 0.999))
+        print(f"  EMA enabled (decay={opt_v2.get('ema_decay', 0.999)})")
+
+    # V2: Gradient monitor
+    grad_monitor = None
+    if opt_v2.get("track_gradients", False):
+        grad_monitor = GradientMonitor()
 
     grad_clip = config["training"]["gradient_clip"]
 
@@ -302,8 +326,17 @@ def train_pretrain(
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(generator.parameters(), grad_clip)
+
+            # V2: Gradient monitoring (last batch per epoch)
+            if grad_monitor is not None:
+                grad_monitor.compute_stats(generator)
+
             scaler.step(optimizer)
             scaler.update()
+
+            # V2: EMA update
+            if ema is not None:
+                ema.update(generator)
 
             epoch_loss += loss.item()
             n_batches += 1
@@ -334,12 +367,33 @@ def train_pretrain(
             writer.add_scalar("pretrain/lr", lr_current, epoch)
             for k, v in val_metrics.items():
                 writer.add_scalar(f"pretrain/{k}", v, epoch)
+            # V2: Gradient stats
+            if grad_monitor is not None:
+                grad_monitor.log_to_tensorboard(writer, epoch, "pretrain/gradients",
+                                                generator if epoch % 10 == 0 else None)
+
+        # V2: EMA validation
+        ema_rmse = None
+        if ema is not None:
+            ema.apply_shadow(generator)
+            ema_metrics = validate(
+                generator, val_loader, val_full_dataset, device, num_full_scenes=5
+            )
+            ema_rmse = ema_metrics.get("rmse", float("inf"))
+            ema.restore(generator)
+            print(f"    EMA Val RMSE: {ema_rmse:.6f}")
+            if writer:
+                for k, v in ema_metrics.items():
+                    writer.add_scalar(f"pretrain/ema_{k}", v, epoch)
 
         # Best-metric checkpoints
         state = build_checkpoint_state(
             epoch, generator, None, optimizer, None, scheduler, None,
             metric_tracker.get_best(), "pretrain"
         )
+        # V2: Include EMA state
+        if ema is not None:
+            state["ema_state"] = ema.state_dict()
 
         if val_metrics.get("rmse", None) is not None:
             metric_tracker.update("rmse", val_metrics["rmse"], state)
@@ -347,6 +401,21 @@ def train_pretrain(
             metric_tracker.update("ssim", val_metrics["scene_ssim"], state)
         if val_metrics.get("scene_psnr", None) is not None:
             metric_tracker.update("psnr", val_metrics["scene_psnr"], state)
+
+        # V2: Save best EMA checkpoint
+        if ema is not None and ema_rmse is not None:
+            if not hasattr(train_pretrain, '_best_ema_rmse'):
+                train_pretrain._best_ema_rmse = float('inf')
+            if ema_rmse < train_pretrain._best_ema_rmse:
+                train_pretrain._best_ema_rmse = ema_rmse
+                ema.apply_shadow(generator)
+                ema_state = build_checkpoint_state(
+                    epoch, generator, None, optimizer, None, scheduler, None,
+                    metric_tracker.get_best(), "pretrain"
+                )
+                save_checkpoint(ema_state, os.path.join(
+                    config["checkpoint"]["save_dir"], "best_ema_generator.pth"))
+                ema.restore(generator)
 
         # Save periodic checkpoint
         if (epoch + 1) % config["checkpoint"]["save_interval"] == 0:
@@ -362,32 +431,28 @@ def train_pretrain(
             os.path.join(config["checkpoint"]["save_dir"], "last_checkpoint.pth"),
         )
 
-        # Global Minima Search: Smoothed Early Stopping
-        # 1. EMA smoothing filters out local minima and noisy spikes
-        # 2. Burn-in prevents stopping before CosineAnnealingLR drops
-        if smoothed_metric is None:
-            smoothed_metric = val_rmse
+        # Early stopping (V2: uses config min_delta)
+        es_cfg = config["training"]["early_stopping"]
+        min_delta = es_cfg.get("min_delta", 0.0005)
+        if not hasattr(train_pretrain, '_es_state'):
+            train_pretrain._es_state = {
+                'best': float('inf'), 'smoothed': None, 'counter': 0
+            }
+        es = train_pretrain._es_state
+        if es['smoothed'] is None:
+            es['smoothed'] = val_rmse
         else:
-            smoothed_metric = alpha * val_rmse + (1 - alpha) * smoothed_metric
+            es['smoothed'] = 0.2 * val_rmse + 0.8 * es['smoothed']
 
-        improved = False
-        if es_cfg["mode"] == "min":
-            if smoothed_metric < best_smoothed_metric - min_delta:
-                best_smoothed_metric = smoothed_metric
-                improved = True
+        if es['smoothed'] < es['best'] - min_delta:
+            es['best'] = es['smoothed']
+            es['counter'] = 0
         else:
-            if smoothed_metric > best_smoothed_metric + min_delta:
-                best_smoothed_metric = smoothed_metric
-                improved = True
+            es['counter'] += 1
 
-        if improved:
-            patience_counter = 0
-        else:
-            patience_counter += 1
-
-        burn_in = int(total_epochs * 0.8)  # Require 80% completion for LR decay
-        if patience_counter >= es_cfg["patience"] and epoch >= burn_in:
-            print(f"  Early stopping at epoch {epoch+1} (smoothed_rmse={smoothed_metric:.6f})")
+        burn_in = int(total_epochs * 0.8)
+        if es['counter'] >= es_cfg["patience"] and epoch >= burn_in:
+            print(f"  Early stopping at epoch {epoch+1} (smoothed_rmse={es['smoothed']:.6f})")
             break
 
     return metric_tracker.get_best()
@@ -446,21 +511,18 @@ def train_gan(
 
     total_epochs = config["training"]["gan_epochs"]
 
-    scheduler_g = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer_g,
-        T_max=total_epochs,
-        eta_min=config["training"]["scheduler"]["eta_min"],
-    )
-    scheduler_d = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer_d,
-        T_max=total_epochs,
-        eta_min=config["training"]["scheduler"]["eta_min"],
-    )
+    scheduler_g = create_scheduler(optimizer_g, config, total_epochs)
+    scheduler_d = create_scheduler(optimizer_d, config, total_epochs)
 
+    # V2: Full loss configuration
     gen_criterion = GeneratorLoss(
         pixel_weight=loss_cfg["pixel_weight"],
         adversarial_weight=loss_cfg["adversarial_weight"],
         gradient_weight=loss_cfg["gradient_weight"],
+        laplacian_weight=loss_cfg.get("laplacian_weight", 0.0),
+        spectral_weight=loss_cfg.get("spectral_weight", 0.0),
+        multiscale_weight=loss_cfg.get("multiscale_weight", 0.0),
+        pixel_loss_type=loss_cfg.get("pixel_loss_type", "l1"),
     )
 
     scaler = GradScaler(enabled=config["training"]["amp"] and torch.cuda.is_available())
@@ -469,12 +531,18 @@ def train_gan(
     if best_metrics:
         metric_tracker.best.update(best_metrics)
 
-    es_cfg = config["training"]["early_stopping"]
-    best_smoothed_metric = float("inf")
-    smoothed_metric = None
-    patience_counter = 0
-    alpha = 0.1  # Heavier smoothing for GANs
-    min_delta = 1e-4
+    # V2: EMA generator
+    opt_v2 = config.get("optimization", {})
+    ema = None
+    if opt_v2.get("ema_enabled", False):
+        ema = EMAGenerator(generator, decay=opt_v2.get("ema_decay", 0.999))
+        print(f"  EMA enabled (decay={opt_v2.get('ema_decay', 0.999)})")
+
+    # V2: Gradient monitor
+    grad_monitor = None
+    if opt_v2.get("track_gradients", False):
+        grad_monitor = GradientMonitor()
+
     grad_clip = config["training"]["gradient_clip"]
 
     for epoch in range(start_epoch, total_epochs):
@@ -518,8 +586,17 @@ def train_gan(
             scaler.scale(g_loss).backward()
             scaler.unscale_(optimizer_g)
             nn.utils.clip_grad_norm_(generator.parameters(), grad_clip)
+
+            # V2: Gradient monitoring
+            if grad_monitor is not None:
+                grad_monitor.compute_stats(generator)
+
             scaler.step(optimizer_g)
             scaler.update()
+
+            # V2: EMA update
+            if ema is not None:
+                ema.update(generator)
 
             g_loss_sum += g_loss.item()
             d_loss_sum += d_loss.item()
@@ -558,12 +635,33 @@ def train_gan(
             writer.add_scalar("gan/lr_g", lr_g, global_step)
             for k, v in val_metrics.items():
                 writer.add_scalar(f"gan/{k}", v, global_step)
+            # V2: Gradient stats
+            if grad_monitor is not None:
+                grad_monitor.log_to_tensorboard(writer, global_step, "gan/gradients",
+                                                generator if epoch % 10 == 0 else None)
+
+        # V2: EMA validation
+        ema_rmse = None
+        if ema is not None:
+            ema.apply_shadow(generator)
+            ema_metrics = validate(
+                generator, val_loader, val_full_dataset, device, num_full_scenes=5
+            )
+            ema_rmse = ema_metrics.get("rmse", float("inf"))
+            ema.restore(generator)
+            print(f"    EMA Val RMSE: {ema_rmse:.6f}")
+            if writer:
+                for k, v in ema_metrics.items():
+                    writer.add_scalar(f"gan/ema_{k}", v, global_step)
 
         # Best-metric checkpoints
         state = build_checkpoint_state(
             epoch, generator, discriminator, optimizer_g, optimizer_d,
             scheduler_g, scheduler_d, metric_tracker.get_best(), "gan"
         )
+        # V2: Include EMA state
+        if ema is not None:
+            state["ema_state"] = ema.state_dict()
 
         if val_metrics.get("rmse", None) is not None:
             metric_tracker.update("rmse", val_metrics["rmse"], state)
@@ -571,6 +669,21 @@ def train_gan(
             metric_tracker.update("ssim", val_metrics["scene_ssim"], state)
         if val_metrics.get("scene_psnr", None) is not None:
             metric_tracker.update("psnr", val_metrics["scene_psnr"], state)
+
+        # V2: Save best EMA checkpoint
+        if ema is not None and ema_rmse is not None:
+            if not hasattr(train_gan, '_best_ema_rmse'):
+                train_gan._best_ema_rmse = float('inf')
+            if ema_rmse < train_gan._best_ema_rmse:
+                train_gan._best_ema_rmse = ema_rmse
+                ema.apply_shadow(generator)
+                ema_state = build_checkpoint_state(
+                    epoch, generator, discriminator, optimizer_g, optimizer_d,
+                    scheduler_g, scheduler_d, metric_tracker.get_best(), "gan"
+                )
+                save_checkpoint(ema_state, os.path.join(
+                    config["checkpoint"]["save_dir"], "best_ema_generator.pth"))
+                ema.restore(generator)
 
         # Periodic checkpoint
         if (epoch + 1) % config["checkpoint"]["save_interval"] == 0:
@@ -593,23 +706,28 @@ def train_gan(
             d_path,
         )
 
-        # Global Minima Search: Smoothed Early Stopping for GAN
-        # 1. Heavy EMA smoothing filters out extreme adversarial oscillations
-        # 2. Burn-in extended to 80% to ensure LR decay reaches the global basin
-        if smoothed_metric is None:
-            smoothed_metric = val_rmse
+        # Early stopping (V2: uses config min_delta)
+        es_cfg = config["training"]["early_stopping"]
+        min_delta = es_cfg.get("min_delta", 0.0005)
+        if not hasattr(train_gan, '_es_state'):
+            train_gan._es_state = {
+                'best': float('inf'), 'smoothed': None, 'counter': 0
+            }
+        es = train_gan._es_state
+        if es['smoothed'] is None:
+            es['smoothed'] = val_rmse
         else:
-            smoothed_metric = alpha * val_rmse + (1 - alpha) * smoothed_metric
+            es['smoothed'] = 0.1 * val_rmse + 0.9 * es['smoothed']
 
-        if smoothed_metric < best_smoothed_metric - min_delta:
-            best_smoothed_metric = smoothed_metric
-            patience_counter = 0
+        if es['smoothed'] < es['best'] - min_delta:
+            es['best'] = es['smoothed']
+            es['counter'] = 0
         else:
-            patience_counter += 1
+            es['counter'] += 1
 
         burn_in = int(total_epochs * 0.8)
-        if patience_counter >= es_cfg["patience"] and epoch >= burn_in:
-            print(f"  Early stopping at epoch {epoch+1} (smoothed_rmse={smoothed_metric:.6f})")
+        if es['counter'] >= es_cfg["patience"] and epoch >= burn_in:
+            print(f"  Early stopping at epoch {epoch+1} (smoothed_rmse={es['smoothed']:.6f})")
             break
 
     return metric_tracker.get_best()

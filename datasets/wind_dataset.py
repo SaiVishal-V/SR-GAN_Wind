@@ -1,5 +1,5 @@
 """
-WindSRDataset — NetCDF-backed PyTorch Dataset for wind-speed super-resolution.
+WindSRDataset — NetCDF-backed PyTorch Dataset for wind-speed super-resolution (V2).
 
 Features:
     - Efficient NetCDF reading via netCDF4 with memory mapping
@@ -8,12 +8,15 @@ Features:
     - Temporal train/val/test splitting (no random split — prevents leakage)
     - Full-scene mode for validation/evaluation
     - Proper handling of _FillValue (-9999) and masked arrays
+    - observed_mask loading for observed-only evaluation
+    - No data augmentation (geophysical constraint)
 
 Verified variable names and shapes from dataset inspection:
     - wind_speed_lr_norm: (392, 80, 140), _FillValue=-9999.0
     - wind_speed_hr_norm: (392, 320, 560), _FillValue=-9999.0
     - hr_ocean_mask: (320, 560), binary {0,1}, 1=ocean
     - lr_ocean_fraction: (80, 140), quantized 1/16 steps
+    - observed_mask: (392, 321, 561), binary {0,1}, per-timestep
 """
 
 import numpy as np
@@ -47,6 +50,7 @@ class WindSRDataset(Dataset):
         patches_per_image: int = 32,
         scale_factor: int = 4,
         cache: bool = True,
+        load_observed_mask: bool = False,
     ):
         """
         Args:
@@ -63,6 +67,8 @@ class WindSRDataset(Dataset):
             patches_per_image: Number of random patches per timestep per epoch.
             scale_factor: Super-resolution scale factor.
             cache: If True, cache entire dataset in RAM.
+            load_observed_mask: If True, load per-timestep observed_mask for
+                observed-only evaluation.
         """
         super().__init__()
 
@@ -73,6 +79,7 @@ class WindSRDataset(Dataset):
         self.min_ocean_fraction = min_ocean_fraction
         self.patches_per_image = patches_per_image
         self.scale_factor = scale_factor
+        self.load_observed_mask = load_observed_mask
 
         # Open dataset and read metadata
         ds = nc.Dataset(nc_path, "r")
@@ -95,6 +102,36 @@ class WindSRDataset(Dataset):
         if isinstance(quality_data, np.ma.MaskedArray):
             quality_data = quality_data.filled(0)
         self.lr_ocean_fraction = quality_data.astype(np.float32)
+
+        # Load observed_mask if requested
+        # Shape: (392, 321, 561) on original grid — must crop to (320, 560)
+        self.observed_mask_cache = None
+        if load_observed_mask and "observed_mask" in ds.variables:
+            obs_var = ds.variables["observed_mask"]
+            obs_shape = obs_var.shape
+
+            if len(obs_shape) == 3:
+                # Per-timestep: (time, lat_orig, lon_orig)
+                # Need to crop from (321, 561) to (320, 560) to match HR grid
+                hr_h, hr_w = self.hr_ocean_mask.shape
+                obs_data = obs_var[self.time_indices, :hr_h, :hr_w]
+                if isinstance(obs_data, np.ma.MaskedArray):
+                    obs_data = obs_data.filled(0)
+                self.observed_mask_cache = obs_data.astype(np.float32)
+            elif len(obs_shape) == 2:
+                # Static: (lat, lon) — broadcast across timesteps
+                obs_data = obs_var[:self.hr_ocean_mask.shape[0], :self.hr_ocean_mask.shape[1]]
+                if isinstance(obs_data, np.ma.MaskedArray):
+                    obs_data = obs_data.filled(0)
+                self.observed_mask_cache = obs_data.astype(np.float32)
+
+        # Load time variable for monthly evaluation
+        self.time_values = None
+        if "time" in ds.variables:
+            time_var = ds.variables["time"]
+            self.time_values = time_var[self.time_indices]
+            self.time_units = getattr(time_var, "units", None)
+            self.time_calendar = getattr(time_var, "calendar", "gregorian")
 
         # Precompute valid patch positions (LR coordinates where ocean_fraction >= threshold)
         if mode == "patch":
@@ -230,11 +267,50 @@ class WindSRDataset(Dataset):
         hr_tensor = torch.from_numpy(hr).unsqueeze(0)
         mask_tensor = torch.from_numpy(self.hr_ocean_mask).unsqueeze(0)
 
-        return {
+        sample = {
             "lr": lr_tensor,
             "hr": hr_tensor,
             "mask": mask_tensor,
         }
+
+        # Include observed mask if loaded
+        if self.observed_mask_cache is not None:
+            if self.observed_mask_cache.ndim == 3:
+                obs = self.observed_mask_cache[idx]
+            else:
+                obs = self.observed_mask_cache
+            sample["observed_mask"] = torch.from_numpy(obs).unsqueeze(0)
+
+        return sample
+
+    def get_time_dates(self):
+        """
+        Convert time values to Python datetime objects.
+
+        Returns:
+            List of datetime objects, or None if time variable unavailable.
+
+        Raises:
+            RuntimeError if time variable exists but cannot be decoded.
+        """
+        if self.time_values is None or self.time_units is None:
+            return None
+
+        try:
+            import cftime
+            dates = nc.num2date(
+                self.time_values,
+                units=self.time_units,
+                calendar=self.time_calendar,
+            )
+            return dates
+        except Exception as e:
+            raise RuntimeError(
+                f"Cannot decode time variable (units='{self.time_units}', "
+                f"calendar='{self.time_calendar}'): {e}\n"
+                f"Time handling requires valid CF-compliant time metadata. "
+                f"Please verify the dataset time variable."
+            )
 
     def close(self) -> None:
         """Close the underlying NetCDF dataset if not cached."""
