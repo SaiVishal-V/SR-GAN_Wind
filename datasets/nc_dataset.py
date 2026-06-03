@@ -430,6 +430,15 @@ def build_datasets(
     T, H, W = data.shape
     logger.info("Data shape: T=%d, H=%d, W=%d", T, H, W)
 
+    # Broadcast mask to 3D if it's 2D (static mask)
+    if real_mask.ndim == 2:
+        if real_mask.shape != (H, W):
+            raise ValueError(f"2D mask shape {real_mask.shape} does not match data spatial shape {(H, W)}")
+        real_mask = np.broadcast_to(real_mask, (T, H, W)).astype(np.float32)
+        logger.info("Broadcasted 2D static mask to 3D shape %s", real_mask.shape)
+    elif real_mask.shape != (T, H, W):
+        raise ValueError(f"Mask shape {real_mask.shape} does not match data shape {(T, H, W)}")
+
     # ── Strict temporal splitting ──────────────────────────────────────
     assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, \
         f"Split ratios must sum to 1.0, got {train_ratio + val_ratio + test_ratio}"
