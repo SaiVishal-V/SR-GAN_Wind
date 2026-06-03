@@ -57,9 +57,40 @@ class BaseTrainer(ABC):
         self.device = device
         self.metadata = metadata or {}
 
+        # ── Hardware Acceleration ──────────────────────────────────
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            logger.info("Enabled: CuDNN benchmark, TF32 matmul, TF32 CuDNN")
+
+        # AMP (Automatic Mixed Precision)
+        self.use_amp = config.training.use_amp and torch.cuda.is_available()
+        self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
+        if self.use_amp:
+            logger.info("AMP (FP16 Mixed Precision) ENABLED")
+
+        # Gradient accumulation
+        self.accumulation_steps = config.training.accumulation_steps
+
         # Build model and optimizer (subclass responsibility)
         self.model = self._build_model()
+
+        # Channels-last memory format for better Tensor Core utilization
+        if config.model.use_channels_last and torch.cuda.is_available():
+            self.model = self.model.to(memory_format=torch.channels_last)
+            logger.info("Channels-last memory format ENABLED")
+
         self.model.to(self.device)
+
+        # torch.compile (PyTorch 2.0+)
+        if config.model.use_compile:
+            try:
+                self.model = torch.compile(self.model)
+                logger.info("torch.compile() ENABLED")
+            except Exception as e:
+                logger.warning("torch.compile() failed: %s. Continuing without.", e)
+
         self.optimizer = self._build_optimizer()
         self.scheduler = self._build_scheduler()
 

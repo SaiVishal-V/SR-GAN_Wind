@@ -88,25 +88,31 @@ class BaselineTrainer(BaseTrainer):
             raise ValueError(f"Unknown optimizer: {cfg.optimizer}")
 
     def _train_step(self, batch: dict[str, torch.Tensor]) -> dict[str, float]:
-        """Execute one training step."""
-        inputs = batch["input"].to(self.device)   # (B, T, 2, H, W)
-        targets = batch["target"].to(self.device)  # (B, T, 1, H, W)
-        masks = batch["mask"].to(self.device)      # (B, T, 1, H, W)
+        """Execute one training step with AMP support."""
+        inputs = batch["input"].to(self.device, non_blocking=True)
+        targets = batch["target"].to(self.device, non_blocking=True)
+        masks = batch["mask"].to(self.device, non_blocking=True)
 
-        # Forward
-        predictions = self.model(inputs)  # (B, T, 1, H, W)
+        # Channels-last for inputs
+        if self.config.model.use_channels_last and inputs.is_cuda:
+            inputs = inputs.contiguous(memory_format=torch.channels_last)
+            targets = targets.contiguous(memory_format=torch.channels_last)
+            masks = masks.contiguous(memory_format=torch.channels_last)
 
-        # Masked L1 loss
-        loss = self.criterion(predictions, targets, masks)
+        # Forward with AMP autocast
+        with torch.amp.autocast('cuda', enabled=self.use_amp):
+            predictions = self.model(inputs)
+            loss = self.criterion(predictions, targets, masks)
 
-        # Optional gradient loss
-        if self.gradient_loss is not None and self.gradient_weight > 0:
-            g_loss = self.gradient_loss(predictions, targets)
-            loss = loss + self.gradient_weight * g_loss
+            if self.gradient_loss is not None and self.gradient_weight > 0:
+                g_loss = self.gradient_loss(predictions, targets)
+                loss = loss + self.gradient_weight * g_loss
 
-        # Backward
-        self.optimizer.zero_grad()
-        loss.backward()
+            # Scale for gradient accumulation
+            loss = loss / self.accumulation_steps
+
+        # Backward with scaler
+        self.scaler.scale(loss).backward()
 
         # Compute gradient norm before clipping
         total_norm = 0.0
@@ -116,27 +122,29 @@ class BaselineTrainer(BaseTrainer):
                 total_norm += param_norm.item() ** 2
         total_norm = total_norm ** 0.5
 
-        # Gradient clipping
+        # Gradient clipping + optimizer step (via scaler)
         if self.config.training.grad_clip > 0:
+            self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(),
                 self.config.training.grad_clip,
             )
 
-        self.optimizer.step()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+        self.optimizer.zero_grad(set_to_none=True)
 
-        return {"loss": loss.item(), "grad_norm": total_norm}
+        return {"loss": loss.item() * self.accumulation_steps, "grad_norm": total_norm}
 
     def _val_step(self, batch: dict[str, torch.Tensor]) -> dict[str, float]:
         """Execute one validation step with gap-only metrics."""
-        inputs = batch["input"].to(self.device)
-        targets = batch["target"].to(self.device)
-        masks = batch["mask"].to(self.device)
+        inputs = batch["input"].to(self.device, non_blocking=True)
+        targets = batch["target"].to(self.device, non_blocking=True)
+        masks = batch["mask"].to(self.device, non_blocking=True)
 
-        predictions = self.model(inputs)
-
-        # Loss
-        loss = self.criterion(predictions, targets, masks)
+        with torch.amp.autocast('cuda', enabled=self.use_amp):
+            predictions = self.model(inputs)
+            loss = self.criterion(predictions, targets, masks)
 
         # Compute gap-only metrics
         pred_np = predictions.cpu().numpy().flatten()

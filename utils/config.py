@@ -39,6 +39,8 @@ class DataConfig:
     val_ratio: float = 0.15
     test_ratio: float = 0.15
     num_workers: int = 4
+    persistent_workers: bool = True
+    prefetch_factor: int = 4
     normalize: bool = True
     norm_method: str = "auto"
     mask_variable: Optional[str] = None
@@ -66,6 +68,8 @@ class ModelConfig:
     disc_depth: int = 3
     use_spectral_norm: bool = True
     conditional: bool = True
+    use_compile: bool = False
+    use_channels_last: bool = True
 
 
 @dataclass
@@ -96,6 +100,8 @@ class TrainingConfig:
     scheduler: str = "sgdr"
     warmup_epochs: int = 5
     grad_clip: float = 1.0
+    use_amp: bool = True
+    accumulation_steps: int = 1
     convergence: ConvergenceConfig = field(default_factory=ConvergenceConfig)
     lr_generator: float = 1e-4
     lr_discriminator: float = 4e-4

@@ -86,20 +86,27 @@ def main() -> None:
     # ── Build DataLoaders ──────────────────────────────────────────
     from torch.utils.data import DataLoader
 
+    num_workers = config.data.num_workers
+    use_persistent = config.data.persistent_workers and num_workers > 0
+
     train_loader = DataLoader(
         train_ds,
         batch_size=config.training.batch_size,
         shuffle=True,
-        num_workers=config.data.num_workers,
+        num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
+        persistent_workers=use_persistent,
+        prefetch_factor=config.data.prefetch_factor if num_workers > 0 else None,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=config.training.batch_size,
         shuffle=False,
-        num_workers=config.data.num_workers,
+        num_workers=num_workers,
         pin_memory=True,
+        persistent_workers=use_persistent,
+        prefetch_factor=config.data.prefetch_factor if num_workers > 0 else None,
     )
 
     # ── Select Trainer ─────────────────────────────────────────────
