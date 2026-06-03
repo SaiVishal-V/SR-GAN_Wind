@@ -97,6 +97,7 @@ class CheckpointConfig:
     save_best_mae: bool = True
     save_best_corr: bool = True
     checkpoint_dir: str = "checkpoints"
+    resume_from: Optional[str] = None
 
 
 @dataclass

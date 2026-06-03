@@ -114,6 +114,16 @@ class BaseTrainer(ABC):
             except ImportError:
                 logger.warning("W&B not available. Install wandb.")
 
+        self.start_epoch = 0
+        if config.checkpointing.resume_from:
+            ckpt_path = Path(config.checkpointing.resume_from)
+            if ckpt_path.exists():
+                logger.info("Resuming training from checkpoint: %s", ckpt_path)
+                ckpt = self.ckpt_manager.load(ckpt_path, self.model, self.optimizer, self.device)
+                self.start_epoch = ckpt.get("epoch", 0) + 1
+            else:
+                logger.warning("Resume checkpoint not found: %s. Starting from scratch.", ckpt_path)
+
         # Save config for reproducibility
         save_config(config, self.output_dir / "config.yaml")
 
@@ -178,7 +188,7 @@ class BaseTrainer(ABC):
         logger.info("Starting training: %d epochs, batch_size=%d", cfg.epochs, cfg.batch_size)
         logger.info("Model parameters: %s", f"{sum(p.numel() for p in self.model.parameters()):,}")
 
-        for epoch in range(cfg.epochs):
+        for epoch in range(self.start_epoch, cfg.epochs):
             epoch_start = time.time()
 
             # ── Train Phase ────────────────────────────────────────
