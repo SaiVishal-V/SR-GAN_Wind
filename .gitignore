@@ -1,43 +1,51 @@
-# Python
+# ── Data ────────────────────────────────────────
+data/
+*.nc
+*.h5
+*.hdf5
+*.zarr
+
+# ── Outputs ─────────────────────────────────────
+outputs/
+checkpoints/
+reports/
+*.csv
+*.log
+
+# ── Python ──────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 *.egg-info/
 dist/
 build/
 *.egg
+.eggs/
 
-# Virtual environments
+# ── Virtual Environments ────────────────────────
+.venv/
 venv/
 env/
-.env/
+ENV/
 
-# IDE
+# ── IDE ─────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# Data files
-*.nc
-*.hdf5
-*.h5
-data/*.nc
-
-# Checkpoints & outputs
-checkpoints/
-outputs/
-results/
-tensorboard/
-*.pth
-*.pt
-
-# Jupyter
+# ── Jupyter ─────────────────────────────────────
 .ipynb_checkpoints/
 
-# OS
+# ── W&B ─────────────────────────────────────────
+wandb/
+
+# ── OS ──────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
+# ── Misc ────────────────────────────────────────
+*.tmp
+*.bak

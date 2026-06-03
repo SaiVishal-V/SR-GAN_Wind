@@ -1,143 +1,98 @@
-# SR-GAN Wind Speed Super-Resolution
+# WindGapGAN — Spatio-Temporal Gap Filling Framework
 
-Production-grade Super-Resolution GAN for ocean surface wind-speed super-resolution (4×) using satellite-derived NetCDF4 data.
+> **Dataset-agnostic Earth Observation gap filling** using GANFilling-inspired architectures.
+>
+> Adapted for ocean surface wind speed, generalizable to any NetCDF variable.
 
-## Features
+## Scientific Objective
 
-- **Scientific SR-GAN**: Designed for geophysical data (NOT RGB imagery)
-- **Masked Training**: All losses respect ocean/land masks
-- **Two-Stage Pipeline**: Generator pretraining (L1) → GAN fine-tuning
-- **GPU Optimized**: AMP mixed precision, supports T4/A100 (Google Colab)
-- **Fully Reproducible**: Deterministic training with seed control
-- **Modular Architecture**: Clean separation of data, models, training, evaluation
-- **Comprehensive Metrics**: MAE, RMSE, PSNR, SSIM, Gradient RMSE, physical metrics (m/s)
-- **Baseline Comparisons**: Automated benchmarking against Bicubic and SRResNet
+```
+Input:  Wind field with missing observations + Observation mask
+Output: Gap-filled wind field (observed pixels preserved exactly)
+```
 
-## Dataset
+This is a **sequence-to-sequence gap-filling** problem, not super-resolution.
 
-**Input**: `IR_wind_23_24_new_SRGAN_ready.nc`
+## Reference
 
-| Variable | Shape | Description |
-|---|---|---|
-| `wind_speed_lr_norm` | (392, 80, 140) | LR normalized input |
-| `wind_speed_hr_norm` | (392, 320, 560) | HR normalized target |
-| `hr_ocean_mask` | (320, 560) | Ocean mask (1=ocean, 0=land) |
-| `lr_ocean_fraction` | (80, 140) | Ocean fraction per LR cell |
+> Gonzalez-Calabuig, M., Fernández-Torres, M.-Á., & Camps-Valls, G. (2025).
+> *Generative Networks for Spatio-Temporal Gap Filling of Sentinel-2 Reflectances*.
+> ISPRS Journal of Photogrammetry and Remote Sensing, 220, 637–648.
 
-**Scale Factor**: 4× (80→320, 140→560)
+## Architecture Phases
 
-**Normalization**: `wind_speed_mps = norm × 2.9275 + 6.3363`
-
-## Architecture
-
-### Generator (SRResNet)
-- 8 Residual Blocks (no BatchNorm)
-- PReLU activation
-- 2× PixelShuffle upsampling (4× total)
-- 1-channel I/O
-
-### Discriminator (PatchGAN)
-- 70×70 receptive field
-- Spectral Normalization
-- Patch-level realism map output
+| Phase | Model | Purpose |
+|-------|-------|---------|
+| 1 | Masked U-Net | Spatial baseline (no temporal modeling) |
+| 2 | ConvLSTM U-Net | Spatio-temporal modeling |
+| 3 | ConvLSTM U-Net + PatchGAN | Adversarial gap filling |
 
 ## Quick Start
 
 ### Installation
 
 ```bash
+# Option A: pip
 pip install -r requirements.txt
+
+# Option B: conda
+conda env create -f environment.yml
+conda activate windgapgan
 ```
 
-### Training
+### Explore Your Dataset
 
 ```bash
-# Full pipeline (pretrain + GAN)
-python training/train.py --config configs/config.yaml
-
-# Google Colab
-python training/train.py --config configs/config.yaml --colab
-
-# Resume from checkpoint
-python training/train.py --config configs/config.yaml --resume checkpoints/last_checkpoint.pth
+python scripts/inspect_dataset.py --nc_path /path/to/your/data.nc
 ```
 
-### Evaluation
+### Train
 
 ```bash
-python evaluation/evaluate.py --config configs/config.yaml --checkpoint checkpoints/best_rmse_generator.pth
+# Phase 1: Masked U-Net baseline
+python train.py --config configs/default.yaml --data.nc_path /path/to/data.nc
+
+# Phase 2: ConvLSTM U-Net
+python train.py --config configs/default.yaml --model.name convlstm_unet --data.nc_path /path/to/data.nc
+
+# Phase 3: GAN
+python train.py --config configs/default.yaml --model.name gan --data.nc_path /path/to/data.nc
 ```
 
-### Benchmarking
+### Evaluate
 
 ```bash
-python evaluation/benchmark.py --config configs/config.yaml \
-    --srresnet checkpoints/pretrain_best.pth \
-    --srgan checkpoints/best_rmse_generator.pth
+python evaluate.py --config configs/default.yaml --checkpoint checkpoints/best_rmse.pt
 ```
 
-## Training Strategy
+## Features
 
-| Stage | Epochs | Loss | Optimizer |
-|---|---|---|---|
-| 1. Pretrain | 100 | Masked L1 | AdamW (lr=1e-4) |
-| 2. GAN | 200 | L1 + Adversarial + Gradient | AdamW (lr=1e-4) |
-
-## Loss Function
-
-```
-L_G = 1.0 × Masked_L1 + 1e-3 × Adversarial + 0.1 × Gradient_Loss
-```
-
-## Metrics
-
-| Metric | Space | Description |
-|---|---|---|
-| MAE | Normalized | Mean Absolute Error |
-| RMSE | Normalized | Root Mean Squared Error |
-| PSNR | Normalized | Peak Signal-to-Noise Ratio |
-| SSIM | Normalized | Structural Similarity |
-| Gradient RMSE | Normalized | Wind front preservation |
-| RMSE (m/s) | Physical | After denormalization |
-| MAE (m/s) | Physical | After denormalization |
-| Bias (m/s) | Physical | Systematic error |
-| Correlation | Physical | Pearson correlation |
+- **Dataset Agnostic**: Works with any NetCDF file — variables, dimensions, and missing values discovered automatically
+- **Adaptive Normalization**: `auto | zscore | minmax | robust | none`
+- **Automatic Mask Detection**: Priority chain: explicit mask → `_FillValue` → `NaN` / sentinel values
+- **Classical Baselines**: Persistence, Linear Interpolation, Nearest Neighbor, Mean Filling
+- **Gap-Only Evaluation**: Separate metrics for reconstructed vs. observed regions
+- **Error Stratification**: Metrics broken down by wind-speed regime
+- **Distribution Metrics**: KL Divergence, Wasserstein Distance
+- **Experiment Tracking**: TensorBoard + Weights & Biases
 
 ## Project Structure
 
 ```
-srgan_windspeed/
-├── configs/config.yaml          # All hyperparameters
-├── datasets/wind_dataset.py     # NetCDF dataset & patching
-├── models/
-│   ├── generator.py             # SRResNet (no BatchNorm)
-│   ├── discriminator.py         # PatchGAN + Spectral Norm
-│   └── losses.py                # Masked losses + gradient loss
-├── utils/
-│   ├── metrics.py               # All evaluation metrics
-│   ├── plotting.py              # matplotlib visualization
-│   ├── checkpoint.py            # Save/load + best-metric tracking
-│   └── seed.py                  # Reproducibility
-├── training/
-│   ├── train.py                 # Two-stage training pipeline
-│   └── validate.py              # Patch + full-scene validation
-├── evaluation/
-│   ├── evaluate.py              # Full evaluation + NetCDF output
-│   └── benchmark.py             # Bicubic/SRResNet/SRGAN comparison
-├── requirements.txt
-├── README.md
-└── LICENSE
+WindGapGAN/
+├── configs/         # YAML configuration files
+├── datasets/        # NetCDF dataset, variable discovery, mask generation
+├── models/          # U-Net, ConvLSTM U-Net, Generator, Discriminator
+├── losses/          # Masked L1, Gradient, Adversarial losses
+├── trainers/        # Training loops (baseline, ConvLSTM, GAN)
+├── evaluators/      # Metrics and evaluation pipeline
+├── visualization/   # Loss plots, prediction maps, error maps
+├── utils/           # Config, logging, checkpointing, I/O
+├── scripts/         # CLI tools
+├── tests/           # Unit tests
+├── train.py         # Main training entry point
+└── evaluate.py      # Main evaluation entry point
 ```
-
-## Scientific Constraints
-
-- ❌ No VGG perceptual loss
-- ❌ No ImageNet normalization
-- ❌ No color augmentation
-- ✅ Preserve wind-speed gradients
-- ✅ Preserve mesoscale structures
-- ✅ Mask-aware loss computation
-- ✅ Physical metric evaluation
 
 ## License
 

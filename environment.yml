@@ -1,0 +1,21 @@
+name: windgapgan
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pytorch>=2.0
+  - torchvision
+  - numpy>=1.24
+  - xarray>=2023.1
+  - netcdf4>=1.6
+  - scipy>=1.10
+  - matplotlib>=3.7
+  - pyyaml>=6.0
+  - pandas>=2.0
+  - tqdm>=4.65
+  - pip
+  - pip:
+    - tensorboard>=2.13
+    - wandb>=0.15

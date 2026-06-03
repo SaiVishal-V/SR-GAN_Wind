@@ -1,0 +1,114 @@
+# ─────────────────────────────────────────────────
+# WindGapGAN — Master Configuration
+# ─────────────────────────────────────────────────
+# All paths are relative to the project root unless
+# specified as absolute. Override any value via CLI:
+#   python train.py --data.nc_path /path/to/file.nc
+# ─────────────────────────────────────────────────
+
+# ── Data ────────────────────────────────────────
+data:
+  nc_path: null                        # REQUIRED — path to NetCDF file
+  target_variable: null                # Auto-discovered; user selects interactively
+  time_dim: null                       # Auto-detected (time, Time, T, date, ...)
+  lat_dim: null                        # Auto-detected (lat, latitude, y, ...)
+  lon_dim: null                        # Auto-detected (lon, longitude, x, ...)
+  sequence_length: 5                   # Temporal window (3, 5, 7, 9, 11)
+  patch_size: 64                       # Spatial crop (32, 64, 96, 128)
+  stride: 32                           # Patch extraction stride
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  num_workers: 4
+
+  # ── Normalization ─────────────────────────────
+  normalize: true
+  norm_method: "auto"                  # auto | zscore | minmax | robust | none
+  # 'auto' will analyze data distribution and select the best method.
+
+  # ── Missing Value Detection ───────────────────
+  mask_variable: null                  # Explicit mask var name (optional)
+  missing_values: null                 # User-defined sentinel list, e.g. [-9999, 9999]
+
+  # ── Synthetic Mask Augmentation ───────────────
+  synthetic_mask_strategy: "mixed"     # random | block | real | mixed
+  synthetic_mask_ratio: 0.3            # Fraction of pixels to mask
+
+# ── Model ───────────────────────────────────────
+model:
+  name: "unet"                         # unet | convlstm_unet | gan
+  in_channels: 2                       # [variable_field, observed_mask]
+  out_channels: 1                      # [reconstructed_field]
+  base_features: 32                    # Feature map base width
+  depth: 4                             # Encoder/decoder depth
+  dropout: 0.1
+  use_batch_norm: true
+
+  # ── ConvLSTM-Specific ────────────────────────
+  convlstm_hidden: 64
+  convlstm_layers: 2
+  convlstm_kernel_size: 3
+
+  # ── Discriminator-Specific ───────────────────
+  discriminator_type: "spatial"        # spatial | spatiotemporal
+  disc_base_features: 64
+  disc_depth: 3
+  use_spectral_norm: true
+  conditional: true                    # Conditional GAN (input concatenated)
+
+# ── Training ────────────────────────────────────
+training:
+  epochs: 200
+  batch_size: 8
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  optimizer: "adam"                     # adam | adamw
+  scheduler: "cosine"                  # cosine | step | plateau | none
+  warmup_epochs: 5
+  grad_clip: 1.0
+  early_stopping_patience: 30
+
+  # ── GAN-Specific ─────────────────────────────
+  lr_generator: 1.0e-4
+  lr_discriminator: 4.0e-4
+  adversarial_weight: 0.01
+  adversarial_ramp_epochs: 20
+  gradient_loss_weight: 0.0            # 0 = disabled
+
+# ── Checkpointing ──────────────────────────────
+checkpointing:
+  save_every: 50                       # Save checkpoint every N epochs
+  save_best_rmse: true
+  save_best_mae: true
+  save_best_corr: true
+  checkpoint_dir: "checkpoints"
+
+# ── Logging ─────────────────────────────────────
+logging:
+  use_wandb: false
+  use_tensorboard: true
+  wandb_project: "windgapgan"
+  wandb_entity: null
+  log_dir: "outputs/logs"
+  log_every_n_steps: 10
+
+# ── Output ──────────────────────────────────────
+output:
+  output_dir: "outputs"
+  save_predictions_netcdf: true
+  save_visualizations: true
+  save_metrics_csv: true
+  save_experiment_summary: true
+
+# ── Evaluation ──────────────────────────────────
+evaluation:
+  run_classical_baselines: true        # Compare against persistence, interp, etc.
+  wind_speed_regimes:                  # Error stratification bins (m/s)
+    - [0, 5]
+    - [5, 10]
+    - [10, 15]
+    - [15, null]                       # null = infinity
+
+# ── Reproducibility ────────────────────────────
+seed: 42
+device: "auto"                         # auto | cpu | cuda | cuda:0

@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "windgapgan"
+version = "0.1.0"
+description = "Spatio-Temporal Gap Filling of Earth Observation Data using GANFilling-inspired Architectures"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "WindGapGAN Team"},
+]
+keywords = [
+    "gap-filling",
+    "inpainting",
+    "wind-speed",
+    "earth-observation",
+    "deep-learning",
+    "GAN",
+    "ConvLSTM",
+    "NetCDF",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.24",
+    "xarray>=2023.1",
+    "netCDF4>=1.6",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "pyyaml>=6.0",
+    "tensorboard>=2.13",
+    "tqdm>=4.65",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+wandb = ["wandb>=0.15"]
+dev = [
+    "pytest>=7.3",
+    "pytest-cov>=4.1",
+    "flake8>=6.0",
+    "black>=23.3",
+    "isort>=5.12",
+    "mypy>=1.3",
+]
+all = ["windgapgan[wandb,dev]"]
+
+[project.scripts]
+windgapgan-train = "train:main"
+windgapgan-evaluate = "evaluate:main"
+windgapgan-inspect = "scripts.inspect_dataset:main"
+
+[tool.setuptools.packages.find]
+include = [
+    "configs*",
+    "datasets*",
+    "models*",
+    "losses*",
+    "trainers*",
+    "evaluators*",
+    "analysis*",
+    "visualization*",
+    "utils*",
+    "scripts*",
+    "tests*",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
