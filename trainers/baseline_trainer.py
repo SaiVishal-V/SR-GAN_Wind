@@ -93,11 +93,16 @@ class BaselineTrainer(BaseTrainer):
         targets = batch["target"].to(self.device, non_blocking=True)
         masks = batch["mask"].to(self.device, non_blocking=True)
 
-        # Channels-last for inputs
+        # Channels-last for inputs (rank 4) or channels_last_3d (rank 5)
         if self.config.model.use_channels_last and inputs.is_cuda:
-            inputs = inputs.contiguous(memory_format=torch.channels_last)
-            targets = targets.contiguous(memory_format=torch.channels_last)
-            masks = masks.contiguous(memory_format=torch.channels_last)
+            if inputs.dim() == 4:
+                inputs = inputs.contiguous(memory_format=torch.channels_last)
+                targets = targets.contiguous(memory_format=torch.channels_last)
+                masks = masks.contiguous(memory_format=torch.channels_last)
+            elif inputs.dim() == 5:
+                inputs = inputs.contiguous(memory_format=torch.channels_last_3d)
+                targets = targets.contiguous(memory_format=torch.channels_last_3d)
+                masks = masks.contiguous(memory_format=torch.channels_last_3d)
 
         # Forward with AMP autocast
         with torch.amp.autocast('cuda', enabled=self.use_amp):

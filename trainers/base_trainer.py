@@ -78,8 +78,17 @@ class BaseTrainer(ABC):
 
         # Channels-last memory format for better Tensor Core utilization
         if config.model.use_channels_last and torch.cuda.is_available():
-            self.model = self.model.to(memory_format=torch.channels_last)
-            logger.info("Channels-last memory format ENABLED")
+            try:
+                # Try 5D first (channels_last_3d)
+                self.model = self.model.to(memory_format=torch.channels_last_3d)
+                logger.info("Channels-last-3d memory format ENABLED (5D)")
+            except Exception:
+                try:
+                    # Fallback to 4D
+                    self.model = self.model.to(memory_format=torch.channels_last)
+                    logger.info("Channels-last memory format ENABLED (4D)")
+                except Exception as e:
+                    logger.warning("Could not apply channels_last memory format: %s", e)
 
         self.model.to(self.device)
 
