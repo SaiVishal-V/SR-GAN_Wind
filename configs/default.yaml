@@ -62,11 +62,23 @@ training:
   batch_size: 8
   learning_rate: 1.0e-4
   weight_decay: 1.0e-5
-  optimizer: "adam"                     # adam | adamw
-  scheduler: "cosine"                  # cosine | step | plateau | none
+  optimizer: "adamw"                    # adam | adamw
+  scheduler: "sgdr"                    # sgdr | cosine | step | plateau | none
   warmup_epochs: 5
   grad_clip: 1.0
-  early_stopping_patience: 30
+
+  # ── Convergence & Early Stopping ─────────────
+  convergence:
+    enabled: true
+    minimum_epoch_before_detection: 50
+    window_size: 25
+    slope_threshold: 1.0e-4
+    variance_threshold: 1.0e-5
+    relative_improvement_threshold: 1.0e-3
+    smoothing_method: "ema"
+    ema_alpha: 0.2
+    required_consecutive_windows: 3
+    max_plateau_cycles: 3
 
   # ── GAN-Specific ─────────────────────────────
   lr_generator: 1.0e-4

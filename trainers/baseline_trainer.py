@@ -108,6 +108,14 @@ class BaselineTrainer(BaseTrainer):
         self.optimizer.zero_grad()
         loss.backward()
 
+        # Compute gradient norm before clipping
+        total_norm = 0.0
+        for p in self.model.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.detach().data.norm(2)
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5
+
         # Gradient clipping
         if self.config.training.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(
@@ -117,7 +125,7 @@ class BaselineTrainer(BaseTrainer):
 
         self.optimizer.step()
 
-        return {"loss": loss.item()}
+        return {"loss": loss.item(), "grad_norm": total_norm}
 
     def _val_step(self, batch: dict[str, torch.Tensor]) -> dict[str, float]:
         """Execute one validation step with gap-only metrics."""

@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader
 
 from utils.checkpoint import CheckpointManager
 from utils.config import Config, save_config
+from utils.convergence import ConvergenceDetector
 
 logger = logging.getLogger(__name__)
 
@@ -85,12 +86,12 @@ class BaseTrainer(ABC):
             "bias_gap": [],
             "corr_gap": [],
             "learning_rate": [],
+            "grad_norm": [],
         }
 
-        # Early stopping
-        self.patience = config.training.early_stopping_patience
+        # Early stopping / Convergence
         self.best_val_loss = float("inf")
-        self.epochs_without_improvement = 0
+        self.convergence_detector = ConvergenceDetector(config.training.convergence)
 
         # TensorBoard
         self.tb_writer = None
@@ -163,6 +164,10 @@ class BaseTrainer(ABC):
             return torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer, T_max=cfg.epochs, eta_min=1e-7
             )
+        elif cfg.scheduler == "sgdr":
+            return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                self.optimizer, T_0=50, T_mult=2, eta_min=1e-7
+            )
         elif cfg.scheduler == "step":
             return torch.optim.lr_scheduler.StepLR(
                 self.optimizer, step_size=50, gamma=0.5
@@ -193,13 +198,13 @@ class BaseTrainer(ABC):
 
             # ── Train Phase ────────────────────────────────────────
             self.model.train()
-            train_losses = []
+            train_step_results = []
 
             for batch in self.train_loader:
                 step_result = self._train_step(batch)
-                train_losses.append(step_result["loss"])
+                train_step_results.append(step_result)
 
-            avg_train_loss = float(np.mean(train_losses))
+            avg_train_loss = float(np.mean([res["loss"] for res in train_step_results]))
 
             # ── Validation Phase ───────────────────────────────────
             self.model.eval()
@@ -228,6 +233,11 @@ class BaseTrainer(ABC):
             self.history["learning_rate"].append(current_lr)
             for key in ["rmse_gap", "mae_gap", "bias_gap", "corr_gap"]:
                 self.history[key].append(avg_val.get(key, float("nan")))
+                
+            # Extract avg grad norm from train step results
+            # Note: subclasses must return 'grad_norm' in _train_step dictionary.
+            avg_grad_norm = float(np.mean([res.get("grad_norm", 0.0) for res in train_step_results]))
+            self.history["grad_norm"].append(avg_grad_norm)
 
             # ── Checkpointing ──────────────────────────────────────
             state = {
@@ -260,6 +270,7 @@ class BaseTrainer(ABC):
                 self.tb_writer.add_scalar("Loss/train", avg_train_loss, epoch)
                 self.tb_writer.add_scalar("Loss/val", avg_val_loss, epoch)
                 self.tb_writer.add_scalar("LR", current_lr, epoch)
+                self.tb_writer.add_scalar("GradNorm", avg_grad_norm, epoch)
                 for key in ["rmse_gap", "mae_gap", "bias_gap", "corr_gap"]:
                     if key in avg_val:
                         self.tb_writer.add_scalar(f"Metrics/{key}", avg_val[key], epoch)
@@ -272,24 +283,30 @@ class BaseTrainer(ABC):
                     "train_loss": avg_train_loss,
                     "val_loss": avg_val_loss,
                     "learning_rate": current_lr,
+                    "grad_norm": avg_grad_norm,
                 }
                 log_dict.update({k: v for k, v in avg_val.items() if not np.isnan(v)})
                 wandb.log(log_dict)
 
-            # ── Early Stopping ─────────────────────────────────────
-            if avg_val_loss < self.best_val_loss:
-                self.best_val_loss = avg_val_loss
-                self.epochs_without_improvement = 0
-            else:
-                self.epochs_without_improvement += 1
-
-            if self.patience > 0 and self.epochs_without_improvement >= self.patience:
-                logger.info(
-                    "Early stopping triggered at epoch %d (no improvement for %d epochs)",
-                    epoch + 1,
-                    self.patience,
-                )
-                break
+            # ── Early Stopping & Convergence ───────────────────────────
+            level, just_promoted = self.convergence_detector.step(
+                epoch=epoch, val_loss=avg_val_loss, grad_norm=avg_grad_norm
+            )
+            
+            if just_promoted:
+                # Save plateau checkpoint
+                plateau_path = self.ckpt_manager.checkpoint_dir / f"plateau_level_{level}_epoch_{epoch + 1}.pt"
+                torch.save(state, plateau_path)
+                logger.info("Saved plateau checkpoint to %s", plateau_path)
+                
+                if level <= self.config.training.convergence.max_plateau_cycles:
+                    logger.info("Triggering SGDR Restart (Level %d)!", level)
+                    # Manually trigger SGDR restart by re-initializing scheduler
+                    if self.scheduler:
+                        self.scheduler = self._build_scheduler()
+                else:
+                    logger.info("True convergence reached (Level 4). Stopping training.")
+                    break
 
         # ── Save Training History ──────────────────────────────────
         self._save_history()

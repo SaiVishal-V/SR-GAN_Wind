@@ -69,6 +69,22 @@ class ModelConfig:
 
 
 @dataclass
+class ConvergenceConfig:
+    """Convergence and advanced early stopping configuration."""
+
+    enabled: bool = True
+    minimum_epoch_before_detection: int = 50
+    window_size: int = 25
+    slope_threshold: float = 1e-4
+    variance_threshold: float = 1e-5
+    relative_improvement_threshold: float = 1e-3
+    smoothing_method: str = "ema"
+    ema_alpha: float = 0.2
+    required_consecutive_windows: int = 3
+    max_plateau_cycles: int = 3
+
+
+@dataclass
 class TrainingConfig:
     """Training loop configuration."""
 
@@ -76,11 +92,11 @@ class TrainingConfig:
     batch_size: int = 8
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
-    optimizer: str = "adam"
-    scheduler: str = "cosine"
+    optimizer: str = "adamw"
+    scheduler: str = "sgdr"
     warmup_epochs: int = 5
     grad_clip: float = 1.0
-    early_stopping_patience: int = 30
+    convergence: ConvergenceConfig = field(default_factory=ConvergenceConfig)
     lr_generator: float = 1e-4
     lr_discriminator: float = 4e-4
     adversarial_weight: float = 0.01
