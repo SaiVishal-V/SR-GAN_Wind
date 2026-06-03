@@ -242,15 +242,25 @@ def load_config(config_path: str | Path, cli_overrides: list[str] | None = None)
 
     # Apply CLI overrides
     if cli_overrides:
-        for override in cli_overrides:
-            if override.startswith("--"):
-                override = override[2:]
-            if "=" in override:
-                key, value = override.split("=", 1)
+        i = 0
+        while i < len(cli_overrides):
+            arg = cli_overrides[i]
+            if arg.startswith("--"):
+                key = arg[2:]
+                if "=" in key:
+                    key, value = key.split("=", 1)
+                    _set_nested(raw, key, value)
+                    i += 1
+                else:
+                    if i + 1 < len(cli_overrides) and not cli_overrides[i + 1].startswith("--"):
+                        value = cli_overrides[i + 1]
+                        _set_nested(raw, key, value)
+                        i += 2
+                    else:
+                        _set_nested(raw, key, "true")
+                        i += 1
             else:
-                # Bare flag → treat as True
-                key, value = override, "true"
-            _set_nested(raw, key, value)
+                i += 1
 
     # Convert to dataclass
     config = _dict_to_dataclass(Config, raw)
