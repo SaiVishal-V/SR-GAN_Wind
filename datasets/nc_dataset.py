@@ -192,18 +192,6 @@ class WindGapDataset(Dataset):
         mask_generator: Optional[MaskGenerator] = None,
         augment: bool = False,
     ) -> None:
-        """
-        Args:
-            data: Full data array, shape (T, H, W), already with NaN for missing.
-            real_mask: Real observation mask, shape (T, H, W), 1=valid, 0=missing.
-            split: 'train', 'val', or 'test'.
-            sequence_length: Number of timesteps per sample.
-            patch_size: Spatial crop size (H=W=patch_size).
-            stride: Stride for patch extraction.
-            norm_stats: Precomputed normalization statistics.
-            mask_generator: Synthetic mask generator (used in training).
-            augment: Whether to apply data augmentation.
-        """
         super().__init__()
 
         self.split = split
@@ -214,16 +202,16 @@ class WindGapDataset(Dataset):
         self.mask_generator = mask_generator
         self.augment = augment and (split == "train")
 
-        # Store data and mask
-        self.data = data.astype(np.float32)
-        self.real_mask = real_mask.astype(np.float32)
-
         # Replace NaN with 0 in data (masked regions)
-        self.data = np.nan_to_num(self.data, nan=0.0)
-
+        data = np.nan_to_num(data.astype(np.float32), nan=0.0)
+        
         # Normalize
         if norm_stats and norm_stats["method"] != "none":
-            self.data = normalize(self.data, norm_stats)
+            data = normalize(data, norm_stats)
+
+        # Store as PyTorch tensors (avoids numpy->tensor conversion in __getitem__)
+        self.data = torch.from_numpy(data)
+        self.real_mask = torch.from_numpy(real_mask.astype(np.float32))
 
         # Build sample index: (time_start, row_start, col_start)
         self.samples = self._build_sample_index()
@@ -269,21 +257,22 @@ class WindGapDataset(Dataset):
         r_end = r_start + self.patch_size
         c_end = c_start + self.patch_size
 
-        # Extract patch
-        data_patch = self.data[t_start:t_end, r_start:r_end, c_start:c_end].copy()
-        mask_patch = self.real_mask[t_start:t_end, r_start:r_end, c_start:c_end].copy()
+        # Extract patch (slice, no copy needed since we don't modify inplace)
+        data_patch = self.data[t_start:t_end, r_start:r_end, c_start:c_end]
+        mask_patch = self.real_mask[t_start:t_end, r_start:r_end, c_start:c_end]
 
         if self.split == "train" and self.mask_generator is not None:
             # Apply synthetic mask on top of real observations.
-            # Only mask pixels that are currently observed (mask=1).
-            synthetic_mask = self.mask_generator.generate_sequence(
+            synthetic_mask_np = self.mask_generator.generate_sequence(
                 self.sequence_length, self.patch_size, self.patch_size
             )
+            synthetic_mask = torch.from_numpy(synthetic_mask_np)
+            
             # Training mask: intersection of real observed and synthetic mask
             train_mask = mask_patch * synthetic_mask
             # The input uses the training mask (with synthetic gaps)
             input_field = data_patch * train_mask
-            # Target is the original data (where real mask = 1)
+            # Target is the original data
             target_field = data_patch
             used_mask = train_mask
         else:
@@ -299,37 +288,37 @@ class WindGapDataset(Dataset):
             )
 
         # Shape: (T, H, W) → (T, 1, H, W)
-        input_field = input_field[:, np.newaxis, :, :]    # (T, 1, H, W)
-        target_field = target_field[:, np.newaxis, :, :]  # (T, 1, H, W)
-        used_mask = used_mask[:, np.newaxis, :, :]        # (T, 1, H, W)
+        input_field = input_field.unsqueeze(1)
+        target_field = target_field.unsqueeze(1)
+        used_mask = used_mask.unsqueeze(1)
 
         # Concatenate field + mask for input: (T, 2, H, W)
-        input_tensor = np.concatenate([input_field, used_mask], axis=1)
+        input_tensor = torch.cat([input_field, used_mask], dim=1)
 
         return {
-            "input": torch.from_numpy(input_tensor),
-            "target": torch.from_numpy(target_field),
-            "mask": torch.from_numpy(used_mask),
+            "input": input_tensor,
+            "target": target_field,
+            "mask": used_mask,
         }
 
     def _augment(
         self,
-        field: np.ndarray,
-        target: np.ndarray,
-        mask: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        field: torch.Tensor,
+        target: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Apply spatial augmentation (flips and rotations)."""
         # Random horizontal flip
         if np.random.random() < 0.5:
-            field = np.flip(field, axis=-1).copy()
-            target = np.flip(target, axis=-1).copy()
-            mask = np.flip(mask, axis=-1).copy()
+            field = torch.flip(field, dims=[-1])
+            target = torch.flip(target, dims=[-1])
+            mask = torch.flip(mask, dims=[-1])
 
         # Random vertical flip
         if np.random.random() < 0.5:
-            field = np.flip(field, axis=-2).copy()
-            target = np.flip(target, axis=-2).copy()
-            mask = np.flip(mask, axis=-2).copy()
+            field = torch.flip(field, dims=[-2])
+            target = torch.flip(target, dims=[-2])
+            mask = torch.flip(mask, dims=[-2])
 
         return field, target, mask
 
