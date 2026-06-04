@@ -202,6 +202,7 @@ class WindGapDataset(Dataset):
         augment: bool = False,
         max_samples_per_epoch: Optional[int] = None,
         seed: int = 42,
+        land_mask: Optional[np.ndarray] = None,
     ) -> None:
         super().__init__()
 
@@ -225,6 +226,13 @@ class WindGapDataset(Dataset):
         # Store as PyTorch tensors — cached in RAM for zero-copy slicing
         self.data = torch.from_numpy(data)
         self.real_mask = torch.from_numpy(real_mask.astype(np.float32))
+
+        # Land-sea mask (2D static): 1=ocean, 0=land. Used to exclude land from loss.
+        if land_mask is not None:
+            self.land_mask = torch.from_numpy(land_mask.astype(np.float32))
+        else:
+            # Default: all pixels are ocean (no land exclusion)
+            self.land_mask = torch.ones(data.shape[1], data.shape[2], dtype=torch.float32)
 
         # Spatial/temporal bounds for random sampling
         T, H, W = self.data.shape
@@ -321,6 +329,9 @@ class WindGapDataset(Dataset):
         data_patch = self.data[t_start:t_end, r_start:r_end, c_start:c_end]
         mask_patch = self.real_mask[t_start:t_end, r_start:r_end, c_start:c_end]
 
+        # Extract land mask patch (2D → broadcast to T)
+        land_patch = self.land_mask[r_start:r_end, c_start:c_end]  # (H, W)
+
         if self.split == "train" and self._cached_masks is not None:
             # Use pre-generated mask from reshuffle()
             synthetic_mask = self._cached_masks[idx]
@@ -338,14 +349,17 @@ class WindGapDataset(Dataset):
 
         # Data augmentation (training only)
         if self.augment:
-            input_field, target_field, used_mask = self._augment(
-                input_field, target_field, used_mask
+            input_field, target_field, used_mask, land_patch = self._augment(
+                input_field, target_field, used_mask, land_patch
             )
 
         # Shape: (T, H, W) → (T, 1, H, W)
         input_field = input_field.unsqueeze(1)
         target_field = target_field.unsqueeze(1)
         used_mask = used_mask.unsqueeze(1)
+
+        # Land mask: (H, W) → (1, 1, H, W) for broadcasting
+        land_mask_out = land_patch.unsqueeze(0).unsqueeze(0)
 
         # Concatenate field + mask for input: (T, 2, H, W)
         input_tensor = torch.cat([input_field, used_mask], dim=1)
@@ -354,6 +368,7 @@ class WindGapDataset(Dataset):
             "input": input_tensor,
             "target": target_field,
             "mask": used_mask,
+            "land_mask": land_mask_out,
         }
 
     def _augment(
@@ -361,21 +376,24 @@ class WindGapDataset(Dataset):
         field: torch.Tensor,
         target: torch.Tensor,
         mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        land_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Apply spatial augmentation (flips and rotations)."""
         # Random horizontal flip
         if np.random.random() < 0.5:
             field = torch.flip(field, dims=[-1])
             target = torch.flip(target, dims=[-1])
             mask = torch.flip(mask, dims=[-1])
+            land_mask = torch.flip(land_mask, dims=[-1])
 
         # Random vertical flip
         if np.random.random() < 0.5:
             field = torch.flip(field, dims=[-2])
             target = torch.flip(target, dims=[-2])
             mask = torch.flip(mask, dims=[-2])
+            land_mask = torch.flip(land_mask, dims=[-2])
 
-        return field, target, mask
+        return field, target, mask, land_mask
 
 
 # ── Dataset Builder ────────────────────────────────────────────────────────
@@ -446,24 +464,7 @@ def build_datasets(
     # Get data array
     da = ds[target_var]
 
-    # Detect or load observation mask
-    mask_var = mask_variable or detect_mask_variable(ds)
-    if mask_var and mask_var in ds.data_vars:
-        logger.info("Using explicit mask variable: '%s'", mask_var)
-        real_mask = ds[mask_var].values.astype(np.float32)
-        # Ensure binary
-        real_mask = (real_mask > 0).astype(np.float32)
-        mask_metadata = {
-            "detection_methods": [f"explicit_variable={mask_var}"],
-            "total_pixels": int(np.prod(real_mask.shape)),
-            "total_missing": int((real_mask == 0).sum()),
-            "missing_fraction": float((real_mask == 0).sum() / np.prod(real_mask.shape)),
-            "observation_fraction": float((real_mask > 0).sum() / np.prod(real_mask.shape)),
-        }
-    else:
-        real_mask, mask_metadata = detect_missing_values(da, user_sentinels=missing_values)
-
-    # Extract data as numpy array: (time, lat, lon)
+    # Extract data as numpy array FIRST (needed for NaN-based mask)
     data = da.values.astype(np.float32)
 
     # Validate data shape — must be 3D (T, H, W)
@@ -476,14 +477,50 @@ def build_datasets(
     T, H, W = data.shape
     logger.info("Data shape: T=%d, H=%d, W=%d", T, H, W)
 
-    # Broadcast mask to 3D if it's 2D (static mask)
-    if real_mask.ndim == 2:
-        if real_mask.shape != (H, W):
-            raise ValueError(f"2D mask shape {real_mask.shape} does not match data spatial shape {(H, W)}")
-        real_mask = np.broadcast_to(real_mask, (T, H, W)).astype(np.float32)
-        logger.info("Broadcasted 2D static mask to 3D shape %s", real_mask.shape)
-    elif real_mask.shape != (T, H, W):
-        raise ValueError(f"Mask shape {real_mask.shape} does not match data shape {(T, H, W)}")
+    # ── Detect or load observation mask ────────────────────────────────
+    # Key distinction:
+    #   land_mask (2D, static):  1=ocean, 0=land — never fill land
+    #   obs_mask  (3D, dynamic): 1=valid observation, 0=gap or land
+    #   obs_mask = land_mask AND NOT isnan(data)
+    mask_var = mask_variable or detect_mask_variable(ds)
+    land_mask = None
+
+    if mask_var and mask_var in ds.data_vars:
+        logger.info("Using explicit mask variable: '%s'", mask_var)
+        raw_mask = ds[mask_var].values.astype(np.float32)
+        raw_mask = (raw_mask > 0).astype(np.float32)
+
+        if raw_mask.ndim == 2:
+            # Static 2D mask = land-sea boundary
+            land_mask = raw_mask.copy()  # (H, W), 1=ocean, 0=land
+            logger.info(
+                "Detected 2D static land-sea mask: %.1f%% ocean",
+                100 * land_mask.mean(),
+            )
+            # Build observation mask: ocean AND has data (not NaN)
+            nan_mask = (~np.isnan(data)).astype(np.float32)  # (T, H, W)
+            real_mask = land_mask[np.newaxis, :, :] * nan_mask
+            logger.info(
+                "Built observation mask from land+NaN: %.1f%% observed (was %.1f%% ocean)",
+                100 * real_mask.mean(),
+                100 * land_mask.mean(),
+            )
+        else:
+            # 3D mask already has temporal variation
+            real_mask = raw_mask
+            if real_mask.shape != (T, H, W):
+                raise ValueError(f"Mask shape {real_mask.shape} does not match data shape {(T, H, W)}")
+
+        mask_metadata = {
+            "detection_methods": [f"explicit_variable={mask_var}"],
+            "has_land_mask": land_mask is not None,
+            "total_pixels": int(np.prod(real_mask.shape)),
+            "total_missing": int((real_mask == 0).sum()),
+            "missing_fraction": float((real_mask == 0).sum() / np.prod(real_mask.shape)),
+            "observation_fraction": float((real_mask > 0).sum() / np.prod(real_mask.shape)),
+        }
+    else:
+        real_mask, mask_metadata = detect_missing_values(da, user_sentinels=missing_values)
 
     # ── Strict temporal splitting ──────────────────────────────────────
     assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6, \
@@ -532,6 +569,7 @@ def build_datasets(
         augment=True,
         max_samples_per_epoch=max_samples_per_epoch,
         seed=seed,
+        land_mask=land_mask,
     )
 
     val_ds = WindGapDataset(
@@ -546,6 +584,7 @@ def build_datasets(
         augment=False,
         max_samples_per_epoch=max_samples_per_epoch,
         seed=seed + 1,
+        land_mask=land_mask,
     )
 
     test_ds = WindGapDataset(
@@ -560,6 +599,7 @@ def build_datasets(
         augment=False,
         max_samples_per_epoch=None,  # Test always uses full dataset
         seed=seed + 2,
+        land_mask=land_mask,
     )
 
     # ── Metadata ───────────────────────────────────────────────────────
@@ -574,6 +614,7 @@ def build_datasets(
         },
         "norm_stats": norm_stats,
         "mask_metadata": mask_metadata,
+        "land_mask": land_mask,  # 2D (H, W) or None
         "time_coords": ds.coords[dims["time"]].values,
         "lat_coords": ds.coords[dims["lat"]].values,
         "lon_coords": ds.coords[dims["lon"]].values,

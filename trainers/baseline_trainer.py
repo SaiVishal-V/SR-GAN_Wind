@@ -92,6 +92,7 @@ class BaselineTrainer(BaseTrainer):
         inputs = batch["input"].to(self.device, non_blocking=True)
         targets = batch["target"].to(self.device, non_blocking=True)
         masks = batch["mask"].to(self.device, non_blocking=True)
+        land_masks = batch["land_mask"].to(self.device, non_blocking=True)
 
         # Channels-last for inputs (rank 4) or channels_last_3d (rank 5)
         if self.config.model.use_channels_last and inputs.is_cuda:
@@ -107,7 +108,7 @@ class BaselineTrainer(BaseTrainer):
         # Forward with AMP autocast
         with torch.amp.autocast('cuda', enabled=self.use_amp):
             predictions = self.model(inputs)
-            loss = self.criterion(predictions, targets, masks)
+            loss = self.criterion(predictions, targets, masks, land_mask=land_masks)
 
             if self.gradient_loss is not None and self.gradient_weight > 0:
                 g_loss = self.gradient_loss(predictions, targets)
@@ -146,18 +147,19 @@ class BaselineTrainer(BaseTrainer):
         inputs = batch["input"].to(self.device, non_blocking=True)
         targets = batch["target"].to(self.device, non_blocking=True)
         masks = batch["mask"].to(self.device, non_blocking=True)
+        land_masks = batch["land_mask"].to(self.device, non_blocking=True)
 
         with torch.amp.autocast('cuda', enabled=self.use_amp):
             predictions = self.model(inputs)
-            loss = self.criterion(predictions, targets, masks)
+            loss = self.criterion(predictions, targets, masks, land_mask=land_masks)
 
-        # Compute gap-only metrics on GPU
-        gap_mask = (1.0 - masks).bool()
+        # Compute gap-only metrics on GPU (ocean gaps only, excluding land)
+        ocean_gap_mask = ((1.0 - masks) * land_masks).bool()
         metrics = {"loss": loss.item()}
 
-        if gap_mask.any():
-            gap_pred = predictions[gap_mask]
-            gap_target = targets[gap_mask]
+        if ocean_gap_mask.any():
+            gap_pred = predictions[ocean_gap_mask]
+            gap_target = targets[ocean_gap_mask]
             diff = gap_pred - gap_target
 
             metrics["rmse_gap"] = float(torch.sqrt(torch.mean(diff ** 2)).item())
