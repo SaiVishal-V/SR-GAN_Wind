@@ -76,7 +76,7 @@ def main() -> None:
     from utils.checkpoint import CheckpointManager
 
     model_name = config.model.name.lower()
-    if model_name == "unet":
+    if model_name in ("unet", "gan"):
         model = MaskedUNet(
             in_channels=config.model.in_channels,
             out_channels=config.model.out_channels,
@@ -84,6 +84,9 @@ def main() -> None:
             depth=config.model.depth,
             dropout=0.0,  # No dropout at eval
             use_batch_norm=config.model.use_batch_norm,
+            use_attention=config.model.use_attention,
+            use_tanh=config.model.use_tanh,
+            hard_merge=True,  # Always hard merge at evaluation
         )
     else:
         raise NotImplementedError(f"Model '{model_name}' not yet implemented for evaluation.")

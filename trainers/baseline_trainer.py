@@ -66,6 +66,9 @@ class BaselineTrainer(BaseTrainer):
             depth=cfg.depth,
             dropout=cfg.dropout,
             use_batch_norm=cfg.use_batch_norm,
+            use_attention=cfg.use_attention,
+            use_tanh=cfg.use_tanh,
+            hard_merge=cfg.hard_merge,
         )
         return model
 

@@ -26,6 +26,7 @@ import logging
 import torch
 import torch.nn as nn
 
+from models.attention import SelfAttention2d
 from models.blocks import DoubleConvBlock, DownBlock, ResidualBlock, UpBlock
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,9 @@ class MaskedUNet(nn.Module):
         depth: int = 4,
         dropout: float = 0.1,
         use_batch_norm: bool = True,
+        use_attention: bool = True,
+        use_tanh: bool = False,
+        hard_merge: bool = True,
     ) -> None:
         """
         Args:
@@ -57,12 +61,17 @@ class MaskedUNet(nn.Module):
             depth: Number of encoder/decoder stages.
             dropout: Dropout probability.
             use_batch_norm: Whether to use batch normalization.
+            use_attention: Whether to use self-attention at bottleneck.
+            use_tanh: Whether to apply Tanh to raw prediction (GAN mode).
+            hard_merge: Whether to hard-merge observed pixels (set False
+                for GAN training where softer gradients are preferred).
         """
         super().__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.depth = depth
+        self.hard_merge = hard_merge
 
         # ── Encoder ────────────────────────────────────────────────────
         self.encoder_blocks = nn.ModuleList()
@@ -79,11 +88,16 @@ class MaskedUNet(nn.Module):
 
         # ── Bottleneck ─────────────────────────────────────────────────
         bottleneck_ch = base_features * (2 ** depth)
-        self.bottleneck = nn.Sequential(
+        bottleneck_layers = [
             DoubleConvBlock(ch_in, bottleneck_ch, use_batch_norm=use_batch_norm, dropout=dropout),
             ResidualBlock(bottleneck_ch, use_batch_norm=use_batch_norm, dropout=dropout),
+        ]
+        if use_attention:
+            bottleneck_layers.append(SelfAttention2d(bottleneck_ch))
+        bottleneck_layers.append(
             ResidualBlock(bottleneck_ch, use_batch_norm=use_batch_norm, dropout=dropout),
         )
+        self.bottleneck = nn.Sequential(*bottleneck_layers)
 
         # ── Decoder ────────────────────────────────────────────────────
         self.decoder_blocks = nn.ModuleList()
@@ -99,6 +113,7 @@ class MaskedUNet(nn.Module):
 
         # ── Output Head ────────────────────────────────────────────────
         self.head = nn.Conv2d(ch_in, out_channels, kernel_size=1)
+        self.use_tanh = use_tanh
 
         # Log model size
         total_params = sum(p.numel() for p in self.parameters())
@@ -156,8 +171,15 @@ class MaskedUNet(nn.Module):
         # ── Output ─────────────────────────────────────────────────
         prediction = self.head(h)  # (B*T, 1, H, W)
 
+        if self.use_tanh:
+            prediction = torch.tanh(prediction)
+
         # Hard constraint: preserve observed pixels exactly
-        output = mask * input_field + (1.0 - mask) * prediction
+        if self.hard_merge:
+            output = mask * input_field + (1.0 - mask) * prediction
+        else:
+            # Soft mode for GAN training — allow gradient flow everywhere
+            output = prediction
 
         # Unfold time
         if has_time:

@@ -40,7 +40,7 @@ data:
 
 # ── Model ───────────────────────────────────────
 model:
-  name: "unet"                         # unet | convlstm_unet | gan
+  name: "gan"                          # unet | gan | convlstm_unet
   in_channels: 2                       # [variable_field, observed_mask]
   out_channels: 1                      # [reconstructed_field]
   base_features: 32                    # Feature map base width
@@ -61,6 +61,9 @@ model:
   conditional: true                    # Conditional GAN (input concatenated)
   use_compile: false                   # torch.compile() — experimental, benchmark first
   use_channels_last: true              # channels_last memory format for Tensor Cores
+  use_attention: true                  # Self-attention at U-Net bottleneck
+  use_tanh: false                      # Tanh output activation (for GAN mode)
+  hard_merge: false                    # Hard merge observed pixels (false for GAN training)
 
 # ── Training ────────────────────────────────────
 training:
@@ -91,9 +94,12 @@ training:
   # ── GAN-Specific ─────────────────────────────
   lr_generator: 1.0e-4
   lr_discriminator: 4.0e-4
-  adversarial_weight: 0.01
-  adversarial_ramp_epochs: 20
-  gradient_loss_weight: 0.0            # 0 = disabled
+  adversarial_weight: 1.0              # Adversarial loss weight (ramped from 0)
+  adversarial_ramp_epochs: 20          # Linear ramp for adversarial weight
+  gradient_loss_weight: 10.0           # Spatial smoothness loss
+  pixel_loss_weight: 100.0             # L1 reconstruction loss on gaps
+  perceptual_loss_weight: 10.0         # Feature-matching loss from discriminator
+  spectral_loss_weight: 1.0            # FFT frequency-domain loss
 
 # ── Checkpointing ──────────────────────────────
 checkpointing:

@@ -72,6 +72,9 @@ class ModelConfig:
     conditional: bool = True
     use_compile: bool = False
     use_channels_last: bool = True
+    use_attention: bool = True
+    use_tanh: bool = False
+    hard_merge: bool = True
 
 
 @dataclass
@@ -110,6 +113,9 @@ class TrainingConfig:
     adversarial_weight: float = 0.01
     adversarial_ramp_epochs: int = 20
     gradient_loss_weight: float = 0.0
+    pixel_loss_weight: float = 100.0
+    perceptual_loss_weight: float = 10.0
+    spectral_loss_weight: float = 1.0
 
 
 @dataclass

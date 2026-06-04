@@ -122,20 +122,23 @@ def main() -> None:
             device=device,
             metadata=metadata,
         )
+    elif model_name == "gan":
+        from trainers.gan_trainer import GANTrainer
+        trainer = GANTrainer(
+            config=config,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            device=device,
+            metadata=metadata,
+        )
     elif model_name == "convlstm_unet":
         # Phase 2 — to be implemented
         raise NotImplementedError(
             "ConvLSTM U-Net trainer not yet implemented. "
             "Complete Phase 1 baseline first."
         )
-    elif model_name == "gan":
-        # Phase 3 — to be implemented
-        raise NotImplementedError(
-            "GAN trainer not yet implemented. "
-            "Complete Phase 2 ConvLSTM baseline first."
-        )
     else:
-        logger.error("Unknown model: '%s'. Choose from: unet, convlstm_unet, gan", model_name)
+        logger.error("Unknown model: '%s'. Choose from: unet, gan, convlstm_unet", model_name)
         sys.exit(1)
 
     # ── Train ──────────────────────────────────────────────────────
