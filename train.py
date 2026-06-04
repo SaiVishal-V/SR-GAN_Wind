@@ -145,25 +145,50 @@ def main() -> None:
     logger.info("Starting training with model: %s", model_name)
     history = trainer.train()
 
-    # ── Save Visualizations ────────────────────────────────────────
-    if config.output.save_visualizations:
-        from visualization.loss_plots import plot_loss_curves, plot_metric_curves
-
-        viz_dir = Path(config.output.output_dir) / "visualizations"
-        viz_dir.mkdir(parents=True, exist_ok=True)
-
-        plot_loss_curves(
-            history["train_loss"],
-            history["val_loss"],
-            save_path=viz_dir / "loss_curves.png",
-        )
-        plot_metric_curves(
-            {k: history[k] for k in ["rmse_gap", "mae_gap", "bias_gap", "corr_gap"]},
-            save_path=viz_dir / "metric_curves.png",
-        )
+    # ── Auto-Evaluate Best Checkpoint ──────────────────────────────
+    best_ckpt = Path(config.checkpointing.checkpoint_dir) / "best_rmse.pt"
+    if best_ckpt.exists():
+        logger.info("=" * 60)
+        logger.info("Auto-evaluating best checkpoint: %s", best_ckpt.name)
+        logger.info("=" * 60)
+        import subprocess
+        
+        # Build command passing the exact same config arguments
+        cmd = [
+            sys.executable, "evaluate.py",
+            "--checkpoint", str(best_ckpt),
+            "--config", "configs/default.yaml",
+            "--data.nc_path", str(config.data.nc_path),
+            "--data.target_variable", config.data.target_variable,
+            "--output.output_dir", str(config.output.output_dir),
+            "--model.name", config.model.name,
+        ]
+        
+        # Add num_workers if specified
+        if config.data.num_workers > 0:
+            cmd.extend(["--data.num_workers", str(config.data.num_workers)])
+            
+        subprocess.run(cmd, check=False)
+    else:
+        # Fallback to visualizing training curves if evaluation wasn't run
+        if config.output.save_visualizations:
+            from visualization.loss_plots import plot_loss_curves, plot_metric_curves
+            
+            viz_dir = Path(config.output.output_dir) / "visualizations"
+            viz_dir.mkdir(parents=True, exist_ok=True)
+            
+            plot_loss_curves(
+                history["train_loss"],
+                history["val_loss"],
+                save_path=viz_dir / "loss_curves.png",
+            )
+            plot_metric_curves(
+                {k: history[k] for k in ["rmse_gap", "mae_gap", "bias_gap", "corr_gap"] if k in history},
+                save_path=viz_dir / "metric_curves.png",
+            )
 
     logger.info("=" * 60)
-    logger.info("Training complete!")
+    logger.info("Training pipeline complete!")
     logger.info("=" * 60)
 
 
