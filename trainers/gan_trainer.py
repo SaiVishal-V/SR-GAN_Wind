@@ -89,7 +89,6 @@ class GANTrainer(BaseTrainer):
 
         # ── Extended History ───────────────────────────────────────
         self.history.update({
-            "g_loss_total": [],
             "g_loss_pixel": [],
             "g_loss_adv": [],
             "g_loss_perceptual": [],
