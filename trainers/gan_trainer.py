@@ -191,10 +191,12 @@ class GANTrainer(BaseTrainer):
             inputs_flat = inputs.reshape(B * T, C, H, W)
             targets_flat = targets.reshape(B * T, 1, H, W)
             masks_flat = masks.reshape(B * T, 1, H, W)
+            land_masks_flat = land_masks.reshape(B * T, 1, H, W)
         else:
             inputs_flat = inputs
             targets_flat = targets
             masks_flat = masks
+            land_masks_flat = land_masks
 
         masked_field = inputs_flat[:, 0:1, :, :]  # (B*T, 1, H, W)
         mask_channel = inputs_flat[:, 1:2, :, :]   # (B*T, 1, H, W)
@@ -255,7 +257,7 @@ class GANTrainer(BaseTrainer):
         with torch.amp.autocast('cuda', enabled=self.use_amp):
             # ── Pixel Loss (L1 on gaps) ───────────────────────────
             pixel_loss = self.pixel_criterion(
-                fake_merged, targets_flat, masks_flat, land_mask=land_masks,
+                fake_merged, targets_flat, masks_flat, land_mask=land_masks_flat,
             )
 
             # ── Adversarial Loss ──────────────────────────────────
@@ -348,10 +350,12 @@ class GANTrainer(BaseTrainer):
             inputs_flat = inputs.reshape(B * T, C, H, W)
             targets_flat = targets.reshape(B * T, 1, H, W)
             masks_flat = masks.reshape(B * T, 1, H, W)
+            land_masks_flat = land_masks.reshape(B * T, 1, H, W)
         else:
             inputs_flat = inputs
             targets_flat = targets
             masks_flat = masks
+            land_masks_flat = land_masks
 
         masked_field = inputs_flat[:, 0:1, :, :]
         mask_channel = inputs_flat[:, 1:2, :, :]
@@ -366,15 +370,15 @@ class GANTrainer(BaseTrainer):
             # Hard merge for evaluation: preserve observed pixels
             predictions = mask_channel * masked_field + (1.0 - mask_channel) * fake_flat
 
-            loss = self.pixel_criterion(predictions, targets_flat, masks_flat, land_mask=land_masks)
+            loss = self.pixel_criterion(predictions, targets_flat, masks_flat, land_mask=land_masks_flat)
 
         # Gap-only metrics (ocean gaps, excluding land)
-        ocean_gap_mask = ((1.0 - masks_flat) * land_masks).bool()
+        ocean_gap_mask = ((1.0 - masks_flat) * land_masks_flat).squeeze(1).bool()
         metrics = {"loss": loss.item()}
 
         if ocean_gap_mask.any():
-            gap_pred = predictions[ocean_gap_mask]
-            gap_target = targets_flat[ocean_gap_mask]
+            gap_pred = predictions.squeeze(1)[ocean_gap_mask]
+            gap_target = targets_flat.squeeze(1)[ocean_gap_mask]
             diff = gap_pred - gap_target
 
             metrics["rmse_gap"] = float(torch.sqrt(torch.mean(diff ** 2)).item())
