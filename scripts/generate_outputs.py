@@ -18,7 +18,7 @@ from models.unet import MaskedUNet
 from utils.checkpoint import CheckpointManager
 from datasets.nc_dataset import denormalize
 from utils.io import save_predictions_netcdf, load_dataset
-from datasets.variable_discovery import discover_dimensions, detect_mask_variable, detect_missing_values
+from datasets.variable_discovery import discover_dimensions, detect_mask_variable, detect_missing_values, discover_variables, prompt_variable_selection
 from visualization.prediction_maps import plot_prediction_comparison
 
 def main():
@@ -36,7 +36,9 @@ def main():
     # 1. Load Data
     logger.info(f"Loading data from {config.data.nc_path}")
     ds = load_dataset(config.data.nc_path)
-    target_var = config.data.target_variable
+    
+    variables = discover_variables(ds)
+    target_var = prompt_variable_selection(variables, auto_select=config.data.target_variable)
     da = ds[target_var]
     
     mask_var = config.data.mask_variable or detect_mask_variable(ds)
