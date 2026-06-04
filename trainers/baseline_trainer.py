@@ -142,7 +142,7 @@ class BaselineTrainer(BaseTrainer):
         return {"loss": loss.item() * self.accumulation_steps, "grad_norm": total_norm}
 
     def _val_step(self, batch: dict[str, torch.Tensor]) -> dict[str, float]:
-        """Execute one validation step with gap-only metrics."""
+        """Execute one validation step with gap-only metrics (GPU-side)."""
         inputs = batch["input"].to(self.device, non_blocking=True)
         targets = batch["target"].to(self.device, non_blocking=True)
         masks = batch["mask"].to(self.device, non_blocking=True)
@@ -151,26 +151,27 @@ class BaselineTrainer(BaseTrainer):
             predictions = self.model(inputs)
             loss = self.criterion(predictions, targets, masks)
 
-        # Compute gap-only metrics
-        pred_np = predictions.cpu().numpy().flatten()
-        target_np = targets.cpu().numpy().flatten()
-        mask_np = masks.cpu().numpy().flatten()
-
-        gap_mask = (1.0 - mask_np).astype(bool)
-
+        # Compute gap-only metrics on GPU
+        gap_mask = (1.0 - masks).bool()
         metrics = {"loss": loss.item()}
 
         if gap_mask.any():
-            gap_pred = pred_np[gap_mask]
-            gap_target = target_np[gap_mask]
+            gap_pred = predictions[gap_mask]
+            gap_target = targets[gap_mask]
             diff = gap_pred - gap_target
 
-            metrics["rmse_gap"] = float(np.sqrt(np.mean(diff ** 2)))
-            metrics["mae_gap"] = float(np.mean(np.abs(diff)))
-            metrics["bias_gap"] = float(np.mean(diff))
+            metrics["rmse_gap"] = float(torch.sqrt(torch.mean(diff ** 2)).item())
+            metrics["mae_gap"] = float(torch.mean(torch.abs(diff)).item())
+            metrics["bias_gap"] = float(torch.mean(diff).item())
 
-            if len(gap_pred) > 1 and np.std(gap_pred) > 1e-10 and np.std(gap_target) > 1e-10:
-                metrics["corr_gap"] = float(np.corrcoef(gap_pred, gap_target)[0, 1])
+            # Correlation stays CPU-side (small tensor, numpy corrcoef is fine)
+            if len(gap_pred) > 1:
+                gp = gap_pred.detach().cpu().numpy()
+                gt = gap_target.detach().cpu().numpy()
+                if np.std(gp) > 1e-10 and np.std(gt) > 1e-10:
+                    metrics["corr_gap"] = float(np.corrcoef(gp, gt)[0, 1])
+                else:
+                    metrics["corr_gap"] = float("nan")
             else:
                 metrics["corr_gap"] = float("nan")
         else:

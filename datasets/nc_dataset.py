@@ -178,6 +178,15 @@ class WindGapDataset(Dataset):
 
     During training, synthetic masks are applied to create artificial gaps.
     During validation/test, real missing patterns are used.
+
+    Performance design:
+        - Stochastic sampling: each epoch uses a fixed random sample budget
+          (max_samples_per_epoch) instead of exhaustively iterating all patches.
+        - Lazy index generation: patch indices (t, r, c) are randomly generated
+          in reshuffle(), not pre-enumerated.
+        - Pre-generated masks: synthetic masks are created once per epoch in
+          reshuffle(), not per-sample in __getitem__.
+        - Data cached as tensors in RAM for zero-copy slicing.
     """
 
     def __init__(
@@ -185,12 +194,14 @@ class WindGapDataset(Dataset):
         data: np.ndarray,
         real_mask: np.ndarray,
         split: str = "train",
-        sequence_length: int = 5,
+        sequence_length: int = 1,
         patch_size: int = 64,
         stride: int = 32,
         norm_stats: Optional[dict[str, Any]] = None,
         mask_generator: Optional[MaskGenerator] = None,
         augment: bool = False,
+        max_samples_per_epoch: Optional[int] = None,
+        seed: int = 42,
     ) -> None:
         super().__init__()
 
@@ -201,43 +212,92 @@ class WindGapDataset(Dataset):
         self.norm_stats = norm_stats
         self.mask_generator = mask_generator
         self.augment = augment and (split == "train")
+        self.max_samples_per_epoch = max_samples_per_epoch
+        self.rng = np.random.RandomState(seed)
 
         # Replace NaN with 0 in data (masked regions)
         data = np.nan_to_num(data.astype(np.float32), nan=0.0)
-        
+
         # Normalize
         if norm_stats and norm_stats["method"] != "none":
             data = normalize(data, norm_stats)
 
-        # Store as PyTorch tensors (avoids numpy->tensor conversion in __getitem__)
+        # Store as PyTorch tensors — cached in RAM for zero-copy slicing
         self.data = torch.from_numpy(data)
         self.real_mask = torch.from_numpy(real_mask.astype(np.float32))
 
-        # Build sample index: (time_start, row_start, col_start)
-        self.samples = self._build_sample_index()
+        # Spatial/temporal bounds for random sampling
+        T, H, W = self.data.shape
+        self._T = T
+        self._H = H
+        self._W = W
+        self._max_t = max(1, T - sequence_length + 1)
+        self._max_r = max(1, H - patch_size + 1)
+        self._max_c = max(1, W - patch_size + 1)
+
+        # Compute full dataset size (for reference / val/test)
+        n_t = self._max_t
+        n_r = len(range(0, H - patch_size + 1, stride))
+        n_c = len(range(0, W - patch_size + 1, stride))
+        self._full_dataset_size = n_t * n_r * n_c
+
+        # Determine effective epoch size
+        if max_samples_per_epoch is not None and split == "train":
+            self._epoch_size = min(max_samples_per_epoch, self._full_dataset_size)
+        elif max_samples_per_epoch is not None and split == "val":
+            # Validation uses a smaller budget
+            self._epoch_size = min(max_samples_per_epoch // 4, self._full_dataset_size)
+        else:
+            self._epoch_size = self._full_dataset_size
+
+        # Storage for current epoch's samples and pre-generated masks
+        self.samples: list[tuple[int, int, int]] = []
+        self._cached_masks: Optional[list[torch.Tensor]] = None
+
+        # Initial population
+        self.reshuffle()
+
         logger.info(
-            "WindGapDataset[%s]: %d samples (T=%d, patch=%d, stride=%d, data_shape=%s)",
+            "WindGapDataset[%s]: %d samples/epoch (full=%d, T=%d, patch=%d, data=%s)",
             split,
-            len(self.samples),
+            self._epoch_size,
+            self._full_dataset_size,
             sequence_length,
             patch_size,
-            stride,
-            data.shape,
+            list(self.data.shape),
         )
 
-    def _build_sample_index(self) -> list[tuple[int, int, int]]:
-        """Build list of valid (time_start, row_start, col_start) indices."""
-        T, H, W = self.data.shape
-        samples = []
+    def reshuffle(self) -> None:
+        """
+        Re-generate random patch indices and pre-generate masks for the epoch.
 
-        # Temporal indices
-        for t in range(0, T - self.sequence_length + 1):
-            # Spatial indices
-            for r in range(0, H - self.patch_size + 1, self.stride):
-                for c in range(0, W - self.patch_size + 1, self.stride):
-                    samples.append((t, r, c))
+        Called at the start of each training epoch by the trainer.
+        For val/test with no max_samples_per_epoch, builds the deterministic grid.
+        """
+        if self.max_samples_per_epoch is not None:
+            # Stochastic sampling: randomly generate (t, r, c) tuples
+            ts = self.rng.randint(0, self._max_t, size=self._epoch_size)
+            rs = self.rng.randint(0, self._max_r, size=self._epoch_size)
+            cs = self.rng.randint(0, self._max_c, size=self._epoch_size)
+            self.samples = list(zip(ts.tolist(), rs.tolist(), cs.tolist()))
+        else:
+            # Exhaustive grid (val/test default)
+            self.samples = []
+            for t in range(self._max_t):
+                for r in range(0, self._H - self.patch_size + 1, self.stride):
+                    for c in range(0, self._W - self.patch_size + 1, self.stride):
+                        self.samples.append((t, r, c))
 
-        return samples
+        # Pre-generate synthetic masks for the epoch (training only)
+        if self.split == "train" and self.mask_generator is not None:
+            self._cached_masks = []
+            for _ in range(len(self.samples)):
+                mask_np = self.mask_generator.generate_sequence(
+                    self.sequence_length, self.patch_size, self.patch_size
+                )
+                self._cached_masks.append(torch.from_numpy(mask_np))
+        else:
+            self._cached_masks = None
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -261,18 +321,13 @@ class WindGapDataset(Dataset):
         data_patch = self.data[t_start:t_end, r_start:r_end, c_start:c_end]
         mask_patch = self.real_mask[t_start:t_end, r_start:r_end, c_start:c_end]
 
-        if self.split == "train" and self.mask_generator is not None:
-            # Apply synthetic mask on top of real observations.
-            synthetic_mask_np = self.mask_generator.generate_sequence(
-                self.sequence_length, self.patch_size, self.patch_size
-            )
-            synthetic_mask = torch.from_numpy(synthetic_mask_np)
-            
+        if self.split == "train" and self._cached_masks is not None:
+            # Use pre-generated mask from reshuffle()
+            synthetic_mask = self._cached_masks[idx]
+
             # Training mask: intersection of real observed and synthetic mask
             train_mask = mask_patch * synthetic_mask
-            # The input uses the training mask (with synthetic gaps)
             input_field = data_patch * train_mask
-            # Target is the original data
             target_field = data_patch
             used_mask = train_mask
         else:
@@ -329,7 +384,7 @@ class WindGapDataset(Dataset):
 def build_datasets(
     nc_path: str | Path,
     target_variable: Optional[str] = None,
-    sequence_length: int = 5,
+    sequence_length: int = 1,
     patch_size: int = 64,
     stride: int = 32,
     train_ratio: float = 0.70,
@@ -340,6 +395,7 @@ def build_datasets(
     missing_values: Optional[list[float]] = None,
     synthetic_mask_strategy: str = "mixed",
     synthetic_mask_ratio: float = 0.3,
+    max_samples_per_epoch: Optional[int] = 4800,
     seed: int = 42,
 ) -> tuple[WindGapDataset, WindGapDataset, WindGapDataset, dict[str, Any]]:
     """
@@ -367,6 +423,7 @@ def build_datasets(
         missing_values: User-defined sentinel values.
         synthetic_mask_strategy: Strategy for synthetic masks.
         synthetic_mask_ratio: Fraction of pixels to mask.
+        max_samples_per_epoch: Stochastic sample budget per epoch (None = full dataset).
         seed: Random seed.
 
     Returns:
@@ -473,6 +530,8 @@ def build_datasets(
         norm_stats=norm_stats,
         mask_generator=mask_gen,
         augment=True,
+        max_samples_per_epoch=max_samples_per_epoch,
+        seed=seed,
     )
 
     val_ds = WindGapDataset(
@@ -485,6 +544,8 @@ def build_datasets(
         norm_stats=norm_stats,
         mask_generator=mask_gen,
         augment=False,
+        max_samples_per_epoch=max_samples_per_epoch,
+        seed=seed + 1,
     )
 
     test_ds = WindGapDataset(
@@ -497,6 +558,8 @@ def build_datasets(
         norm_stats=norm_stats,
         mask_generator=None,
         augment=False,
+        max_samples_per_epoch=None,  # Test always uses full dataset
+        seed=seed + 2,
     )
 
     # ── Metadata ───────────────────────────────────────────────────────

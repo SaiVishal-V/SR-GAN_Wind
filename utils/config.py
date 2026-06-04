@@ -47,6 +47,8 @@ class DataConfig:
     missing_values: Optional[list[float]] = None
     synthetic_mask_strategy: str = "mixed"
     synthetic_mask_ratio: float = 0.3
+    max_samples_per_epoch: Optional[int] = 4800  # Stochastic sample budget; None = full dataset
+    cache_dataset: bool = True  # Keep arrays in RAM (avoid repeated xarray slicing)
 
 
 @dataclass

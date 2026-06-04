@@ -13,15 +13,17 @@ data:
   time_dim: null                       # Auto-detected (time, Time, T, date, ...)
   lat_dim: null                        # Auto-detected (lat, latitude, y, ...)
   lon_dim: null                        # Auto-detected (lon, longitude, x, ...)
-  sequence_length: 5                   # Temporal window (3, 5, 7, 9, 11)
+  sequence_length: 1                   # Temporal window (1 for MaskedUNet; 5+ for ConvLSTM)
   patch_size: 64                       # Spatial crop (32, 64, 96, 128)
   stride: 32                           # Patch extraction stride
   train_ratio: 0.70
   val_ratio: 0.15
   test_ratio: 0.15
-  num_workers: 4
-  persistent_workers: true             # Keep workers alive between epochs
+  num_workers: 0                       # 0 for Windows (spawn overhead); 2-4 for Linux/Colab
+  persistent_workers: false            # Only useful when num_workers > 0
   prefetch_factor: 4                   # Batches to prefetch per worker
+  max_samples_per_epoch: 4800          # Stochastic sample budget per epoch (null = full dataset)
+  cache_dataset: true                  # Keep arrays in RAM — avoids repeated xarray slicing
 
   # ── Normalization ─────────────────────────────
   normalize: true

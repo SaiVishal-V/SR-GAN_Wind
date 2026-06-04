@@ -236,6 +236,11 @@ class BaseTrainer(ABC):
         for epoch in range(self.start_epoch, cfg.epochs):
             epoch_start = time.time()
 
+            # ── Reshuffle Training Data ────────────────────────────────
+            # Re-generate random patch indices and masks for this epoch
+            if hasattr(self.train_loader.dataset, 'reshuffle'):
+                self.train_loader.dataset.reshuffle()
+
             # ── Train Phase ────────────────────────────────────────
             self.model.train()
             train_step_results = []

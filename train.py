@@ -76,6 +76,7 @@ def main() -> None:
         missing_values=config.data.missing_values,
         synthetic_mask_strategy=config.data.synthetic_mask_strategy,
         synthetic_mask_ratio=config.data.synthetic_mask_ratio,
+        max_samples_per_epoch=config.data.max_samples_per_epoch,
         seed=config.seed,
     )
 
